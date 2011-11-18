@@ -1,7 +1,7 @@
 /*
  * Automatically generated C config: don't edit
  * Linux kernel version: 2.6.35.11-dag0.3
- * Thu Nov 17 17:28:20 2011
+ * Fri Nov 18 02:26:13 2011
  */
 #define AUTOCONF_INCLUDED
 #define CONFIG_RING_BUFFER 1
@@ -702,6 +702,7 @@
 #define CONFIG_ARCH_INLINE_READ_LOCK_BH 1
 #define CONFIG_SCSI_MOD 1
 #define CONFIG_KSAPI_MODULE 1
+#define CONFIG_DAG 1
 #define CONFIG_OPROFILE_MODULE 1
 #define CONFIG_CRYPTO_CRC32C 1
 #define CONFIG_SERIAL_CORE 1

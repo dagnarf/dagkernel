@@ -1126,8 +1126,9 @@ static struct clk_freq_tbl clk_tbl_gfx2d[] = {
 	F_GFX2D(145455000, MM_PLL1,  2, 11, NOMINAL),
 	F_GFX2D(160000000, MM_PLL1,  1,  5, NOMINAL),
 	F_GFX2D(177778000, MM_PLL1,  2,  9, NOMINAL),
-	F_GFX2D(200000000, MM_PLL1,  1,  4, NOMINAL),
+	//F_GFX2D(200000000, MM_PLL1,  1,  4, NOMINAL),
 	F_GFX2D(228571000, MM_PLL1,  2,  7, HIGH),
+	F_GFX2D(266667000, MM_PLL1,  2,  7, HIGH),
 	F_END,
 };
 
@@ -1193,7 +1194,8 @@ static struct clk_freq_tbl clk_tbl_gfx3d[] = {
 	F_GFX3D(200000000, MM_PLL1,  1,  4, NOMINAL),
 	F_GFX3D(228571000, MM_PLL1,  2,  7, NOMINAL),
 	F_GFX3D(266667000, MM_PLL1,  1,  3, HIGH),
-	F_GFX3D(320000000, MM_PLL1,  2,  5, HIGH),
+    F_GFX3D(300000000, MM_PLL1,  2,  5, OVER),
+	//F_GFX3D(320000000, MM_PLL1,  2,  5, HIGH),
 	F_END,
 };
 
@@ -1665,6 +1667,7 @@ static struct clk_freq_tbl clk_tbl_vfe[] = {
 	F_VFE(200000000, MM_PLL1,   2, 1,  2, NOMINAL),
 	F_VFE(228570000, MM_PLL1,   1, 2,  7, NOMINAL),
 	F_VFE(266667000, MM_PLL1,   1, 1,  3, HIGH),
+//    F_VFE(300000000, MM_PLL1,   1, 2,  5, OVER),
 	F_END,
 };
 
@@ -2280,6 +2283,7 @@ int soc_update_sys_vdd(enum sys_vdd_level level)
 		[LOW]     = 1000000,
 		[NOMINAL] = 1100000,
 		[HIGH]    = 1200000,
+		[OVER]    = 1300000,
 	};
 
 	return rpm_vreg_set_voltage(RPM_VREG_ID_PM8058_S1,

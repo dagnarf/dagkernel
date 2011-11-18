@@ -181,6 +181,7 @@ enum sys_vdd_level {
 	LOW,
 	NOMINAL,
 	HIGH,
+	OVER,
 	NUM_SYS_VDD_LEVELS
 };
 
