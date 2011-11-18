@@ -1,8 +1,8 @@
-/* This file is auto generated, version 72 */
+/* This file is auto generated, version 79 */
 /* SMP PREEMPT */
 #define UTS_MACHINE "arm"
-#define UTS_VERSION "#72 SMP PREEMPT Thu Nov 17 15:25:12 PST 2011"
-#define LINUX_COMPILE_TIME "15:25:12"
+#define UTS_VERSION "#79 SMP PREEMPT Thu Nov 17 17:28:32 PST 2011"
+#define LINUX_COMPILE_TIME "17:28:32"
 #define LINUX_COMPILE_BY "gabe"
 #define LINUX_COMPILE_HOST "damothership"
 #define LINUX_COMPILE_DOMAIN "(none)"
