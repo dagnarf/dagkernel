@@ -729,7 +729,11 @@ static struct msm_bus_vectors grp2d1_max_vectors[] = {
 		.src = MSM_BUS_MASTER_GRAPHICS_2D_CORE1,
 		.dst = MSM_BUS_SLAVE_EBI_CH0,
 		.ab = 0,
+#ifndef CONFIG_DAG
 		.ib = 1350000000U,
+#else
+		.ib = 1400000000U,
+#endif
 	},
 };
 

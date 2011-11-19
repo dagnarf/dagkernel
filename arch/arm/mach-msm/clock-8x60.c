@@ -1667,7 +1667,7 @@ static struct clk_freq_tbl clk_tbl_vfe[] = {
 	F_VFE(200000000, MM_PLL1,   2, 1,  2, NOMINAL),
 	F_VFE(228570000, MM_PLL1,   1, 2,  7, NOMINAL),
 	F_VFE(266667000, MM_PLL1,   1, 1,  3, HIGH),
-//    F_VFE(300000000, MM_PLL1,   1, 2,  5, OVER),
+    //F_VFE(300000000, MM_PLL1,   1, 2,  5, OVER),
 	F_END,
 };
 
