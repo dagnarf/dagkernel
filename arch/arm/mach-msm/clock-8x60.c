@@ -2283,7 +2283,7 @@ int soc_update_sys_vdd(enum sys_vdd_level level)
 		[LOW]     = 1000000,
 		[NOMINAL] = 1100000,
 		[HIGH]    = 1200000,
-		[OVER]    = 1300000,
+		[OVER]    = 1225000,
 	};
 
 	return rpm_vreg_set_voltage(RPM_VREG_ID_PM8058_S1,
