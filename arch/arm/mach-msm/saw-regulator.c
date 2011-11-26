@@ -58,7 +58,7 @@
 #define PMIC_8901_SMPS_BAND_1_COMPENSATE(vprog)		((vprog) & 0xF8)
 
 /* Minimum core operating voltage */
-#define MIN_CORE_VOLTAGE		950000
+#define MIN_CORE_VOLTAGE		700000
 
 /* Specifies the PMIC internal slew rate in uV/us. */
 #define REGULATOR_SLEW_RATE		1250
@@ -124,7 +124,7 @@ static int saw_set_voltage(struct regulator_dev *dev, int min_uV, int max_uV)
 
 	rc = msm_spm_set_vdd(rdev_get_id(dev), vlevel | band);
 	if (rc)
-		pr_err("%s: msm_spm_set_vdd failed %d\n", __func__, rc);
+		pr_err("%s: msm_spm_set_vdd failed %d - min_uV(%d) - vlevel(%d) - band(%d)\n", __func__, rc, min_uV, vlevel, band);
 	/* Wait for voltage to stabalize */
 	if (delay > 0)
 		udelay(delay);

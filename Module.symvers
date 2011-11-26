@@ -2643,7 +2643,6 @@
 0x00000000	add_to_page_cache_lru	vmlinux	EXPORT_SYMBOL_GPL
 0x00000000	rtnl_unregister	vmlinux	EXPORT_SYMBOL_GPL
 0x00000000	usb_diag_write	vmlinux	EXPORT_SYMBOL
-0x00000000	usb_bus_start_enum	vmlinux	EXPORT_SYMBOL_GPL
 0x00000000	platform_bus_type	vmlinux	EXPORT_SYMBOL_GPL
 0x00000000	blk_rq_map_user	vmlinux	EXPORT_SYMBOL
 0x00000000	jbd2_journal_clear_features	vmlinux	EXPORT_SYMBOL
