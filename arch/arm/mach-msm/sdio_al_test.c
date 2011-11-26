@@ -137,7 +137,6 @@ enum sdio_channels_ids {
 	SDIO_DIAG,
 	SDIO_DUN,
 	SDIO_SMEM,
-	SDIO_CIQ,
 	SDIO_MAX_CHANNELS
 };
 
@@ -353,9 +352,6 @@ static int channel_name_to_id(char *name)
 	else if (!strncmp(name, "SDIO_SMEM_TEST",
 			  strnlen("SDIO_SMEM_TEST", TEST_CH_NAME_SIZE)))
 		return SDIO_SMEM;
-	else if (!strncmp(name, "SDIO_CIQ_TEST",
-			  strnlen("SDIO_CIQ_TEST", TEST_CH_NAME_SIZE)))
-		return SDIO_CIQ;
 	else
 		return SDIO_MAX_CHANNELS;
 
@@ -2826,7 +2822,6 @@ static int set_params_loopback_9k_close(struct test_channel *tch)
 	case SDIO_RPC:
 		tch->packet_length = 128; /* max is 2K*/
 		break;
-	case SDIO_CIQ:
 	case SDIO_DIAG:
 	case SDIO_RMNT:
 	default:
@@ -3032,7 +3027,7 @@ static void set_pseudo_random_seed(void)
    2. close channel
    3. Run lpm Host waker test on packet channel
 */
-#define MAX_LPM_CH_ARR 4
+#define MAX_LPM_CH_ARR 3
 static int close_channel_lpm_test(void)
 {
 	int ret = 0;
@@ -3040,8 +3035,7 @@ static int close_channel_lpm_test(void)
 	int i;
 	int lpm_ch_arr[] = { SDIO_RPC,
 			SDIO_QMI,
-			SDIO_DIAG,
-			SDIO_CIQ};
+			SDIO_DIAG};
 
 	for (i = 0; i < MAX_LPM_CH_ARR; i++) {
 		tch = test_ctx->test_ch_arr[lpm_ch_arr[i]];
@@ -3167,8 +3161,7 @@ ssize_t test_write(struct file *filp, const char __user *buf, size_t size,
 		    set_params_loopback_9k(test_ctx->test_ch_arr[SDIO_DIAG]) ||
 		    set_params_a2_perf(test_ctx->test_ch_arr[SDIO_RMNT]) ||
 		    set_params_a2_perf(test_ctx->test_ch_arr[SDIO_DUN]) ||
-		    set_params_smem_test(test_ctx->test_ch_arr[SDIO_SMEM]) ||
-		    set_params_loopback_9k(test_ctx->test_ch_arr[SDIO_CIQ]))
+		    set_params_smem_test(test_ctx->test_ch_arr[SDIO_SMEM]))
 			return size;
 		break;
 	case 16:
@@ -3176,10 +3169,8 @@ ssize_t test_write(struct file *filp, const char __user *buf, size_t size,
 		set_params_8k_sender_no_lp(test_ctx->test_ch_arr[SDIO_DIAG]);
 		break;
 	case 17:
-		pr_info(TEST_MODULE_NAME " -- host sender no LP for Diag, RPC, "
-					 "CIQ  --");
+		pr_info(TEST_MODULE_NAME " -- host sender no LP for Diag, RPC");
 		set_params_8k_sender_no_lp(test_ctx->test_ch_arr[SDIO_DIAG]);
-		set_params_8k_sender_no_lp(test_ctx->test_ch_arr[SDIO_CIQ]);
 		set_params_8k_sender_no_lp(test_ctx->test_ch_arr[SDIO_RPC]);
 		break;
 	case 18:
@@ -3214,8 +3205,7 @@ ssize_t test_write(struct file *filp, const char __user *buf, size_t size,
 		pr_info(TEST_MODULE_NAME " -- modem reset - all chs "
 					"8bit device--");
 		if (set_params_modem_reset(test_ctx->test_ch_arr[SDIO_RMNT]) ||
-		    set_params_modem_reset(test_ctx->test_ch_arr[SDIO_DUN]) ||
-		    set_params_modem_reset(test_ctx->test_ch_arr[SDIO_CIQ]))
+		    set_params_modem_reset(test_ctx->test_ch_arr[SDIO_DUN]))
 			return size;
 		break;
 	case 26:
@@ -3224,15 +3214,13 @@ ssize_t test_write(struct file *filp, const char __user *buf, size_t size,
 		    set_params_modem_reset(test_ctx->test_ch_arr[SDIO_QMI]) ||
 		    set_params_modem_reset(test_ctx->test_ch_arr[SDIO_DIAG]) ||
 		    set_params_modem_reset(test_ctx->test_ch_arr[SDIO_RMNT]) ||
-		    set_params_modem_reset(test_ctx->test_ch_arr[SDIO_DUN]) ||
-		    set_params_modem_reset(test_ctx->test_ch_arr[SDIO_CIQ]))
+		    set_params_modem_reset(test_ctx->test_ch_arr[SDIO_DUN]))
 			return size;
 		break;
 	case 27:
 		pr_info(TEST_MODULE_NAME " -- host sender with open/close for "
-				"Diag, CIQ and RPC --");
+				"Diag and RPC --");
 		if (set_params_loopback_9k_close(ch_arr[SDIO_DIAG]) ||
-		    set_params_loopback_9k_close(ch_arr[SDIO_CIQ]) ||
 		    set_params_loopback_9k_close(ch_arr[SDIO_RPC]))
 			return size;
 		break;
@@ -3276,8 +3264,6 @@ ssize_t test_write(struct file *filp, const char __user *buf, size_t size,
 		set_pseudo_random_seed();
 		if (set_params_lpm_test(test_ctx->test_ch_arr[SDIO_RPC],
 				    SDIO_TEST_LPM_RANDOM, 0) ||
-		    set_params_lpm_test(test_ctx->test_ch_arr[SDIO_CIQ],
-					SDIO_TEST_LPM_RANDOM, 0) ||
 		    set_params_lpm_test(test_ctx->test_ch_arr[SDIO_DIAG],
 					SDIO_TEST_LPM_RANDOM, 0) ||
 		    set_params_lpm_test(test_ctx->test_ch_arr[SDIO_QMI],
@@ -3307,9 +3293,8 @@ ssize_t test_write(struct file *filp, const char __user *buf, size_t size,
 	switch (test_ctx->testcase) {
 	case 27:
 		pr_info(TEST_MODULE_NAME " -- correctness test for"
-				"DIAG, CIQ and DUN ");
+				"DIAG and DUN ");
 		if (set_params_loopback_9k(ch_arr[SDIO_DIAG]) ||
-		    set_params_loopback_9k(ch_arr[SDIO_CIQ]) ||
 		    set_params_loopback_9k(ch_arr[SDIO_RPC]))
 			return size;
 		break;
@@ -3518,14 +3503,6 @@ static struct platform_driver sdio_dun_drv = {
 	},
 };
 
-static struct platform_driver sdio_ciq_drv = {
-	.probe		= sdio_test_channel_probe,
-	.remove		= sdio_test_channel_remove,
-	.driver		= {
-		.name	= "SDIO_CIQ_TEST",
-		.owner	= THIS_MODULE,
-	},
-};
 
 static struct class *test_class;
 
@@ -3595,7 +3572,6 @@ static int __init test_init(void)
 	platform_driver_register(&sdio_smem_drv);
 	platform_driver_register(&sdio_rmnt_drv);
 	platform_driver_register(&sdio_dun_drv);
-	platform_driver_register(&sdio_ciq_drv);
 
 	return ret;
 }
@@ -3623,7 +3599,6 @@ static void __exit test_exit(void)
 	platform_driver_unregister(&sdio_smem_drv);
 	platform_driver_unregister(&sdio_rmnt_drv);
 	platform_driver_unregister(&sdio_dun_drv);
-	platform_driver_unregister(&sdio_ciq_drv);
 
 	for (i = 0; i < SDIO_MAX_CHANNELS; i++) {
 		struct test_channel *tch = test_ctx->test_ch_arr[i];
