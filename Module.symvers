@@ -534,6 +534,7 @@
 0x00000000	video_device_release	vmlinux	EXPORT_SYMBOL
 0x00000000	sched_autogroup_create_attach	vmlinux	EXPORT_SYMBOL
 0x00000000	fuse_conn_put	fs/fuse/fuse	EXPORT_SYMBOL_GPL
+0x00000000	tsif_get_active	drivers/misc/msm_tsif	EXPORT_SYMBOL
 0x00000000	skb_queue_head	vmlinux	EXPORT_SYMBOL
 0x00000000	skb_prepare_seq_read	vmlinux	EXPORT_SYMBOL
 0x00000000	sk_reset_timer	vmlinux	EXPORT_SYMBOL
