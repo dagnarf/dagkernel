@@ -34,6 +34,8 @@
 #include <mach/scm-io.h>
 #include <asm/mach-types.h>
 #include <mach/irqs.h>
+#include <mach/scm.h>
+#include <mach/msm_watchdog.h>
 #include <mach/sec_debug.h>  // onlyjazz
 #include <linux/notifier.h> // klaatu
 #include <linux/ftrace.h> // klaatu
@@ -57,6 +59,7 @@
 #ifdef CONFIG_SEC_DEBUG
 #define RESTART_SECDEBUG_MODE   	0x776655EE
 #endif
+#define SCM_IO_DISABLE_PMIC_ARBITER	1
 // NOT USE 0x776655FF~0x77665608 command
 #define RESTART_HOMEDOWN_MODE       	0x776655FF
 #define RESTART_HOMEDOWN_MODE_END   	0x77665608
@@ -173,14 +176,26 @@ static void msm_power_off(void)
 
 static void cpu_power_off(void *data)
 {
+	int rc;
+
 	pr_err("PMIC Initiated shutdown %s cpu=%d\n", __func__,
 						smp_processor_id());
-	if (smp_processor_id() == 0) 
+	if (smp_processor_id() == 0) {
 		/*
 		 * PMIC initiated power off, do not lower ps_hold, pmic will
 		 * shut msm down
 		 */
 		__msm_power_off(0);
+
+		pet_watchdog();
+		pr_err("Calling scm to disable arbiter\n");
+		/* call secure manager to disable arbiter and never return */
+		rc = scm_call_atomic1(SCM_SVC_PWR,
+						SCM_IO_DISABLE_PMIC_ARBITER, 1);
+
+		pr_err("SCM returned even when asked to busy loop rc=%d\n", rc);
+		pr_err("waiting on pmic to shut msm down\n");
+	}
 
 	preempt_disable();
 	while (1)

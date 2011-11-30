@@ -47,7 +47,7 @@
 #include <mach/msm_serial_hs_lite.h>
 #include <linux/msm_charm.h>
 #include <mach/sec_debug.h> /* onlyjazz */
-#include "msm_watchdog.h"
+#include <mach/msm_watchdog.h>
 #include "devices.h"
 #include "clock.h"
 

@@ -30,7 +30,7 @@
 #include <mach/msm_iomap.h>
 #include <mach/scm-io.h>
 #include <mach/scm.h>
-#include "msm_watchdog.h"
+#include <mach/msm_watchdog.h>
 
 #define TCSR_WDT_CFG 0x30
 
