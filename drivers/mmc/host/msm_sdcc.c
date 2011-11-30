@@ -218,29 +218,7 @@ static inline uint32_t msmsdcc_fifo_addr(struct msmsdcc_host *host)
 static inline void msmsdcc_delay(struct msmsdcc_host *host)
 {
 	dsb();
-
-	udelay(1 + ((3 * USEC_PER_SEC) /
-		(host->clk_rate ? host->clk_rate : host->plat->msmsdcc_fmin)));
-
-	/* In case if clk_rate <400Khz above code has allready made 8 milli second delay
-	In addition we are making an extra 1 milli second delay to be sure in slow clock domain
-	controller register bits update takes place properly	 */
-
-	if (host->clk_rate <= 400000) // Doesn't metter ZERO or 400KHz this condition does the same work
-		udelay(1);
-}
-
-static inline void msmsdcc_delay_samsung(struct msmsdcc_host *host)
-{
-	dsb();
-	
-	/* An additional function has been added specifically to handle Hercules black screen
-	   case. This will ensure that there is no impact to normal data traffic and it
-	   takes care of ONLY the black screen case where we are assuming that because
-	   of no delay between writes or write and read... we are getting SDCC Lockup.
-	 */
-	if (host->clk_rate <= 400000) // Doesn't metter ZERO or 400KHz this condition does the same work
-		udelay(9);
+	udelay(host->reg_write_delay);
 }
 
 static inline void
@@ -928,6 +906,18 @@ static void msmsdcc_do_cmdirq(struct msmsdcc_host *host, uint32_t status)
 	}
 }
 
+static inline unsigned int msmsdcc_get_min_sup_clk_rate(
+				struct msmsdcc_host *host)
+{
+	return host->plat->msmsdcc_fmin;
+}
+
+static inline unsigned int msmsdcc_get_max_sup_clk_rate(
+				struct msmsdcc_host *host)
+{
+	return host->plat->msmsdcc_fmax;
+}
+
 static irqreturn_t
 msmsdcc_irq(int irq, void *dev_id)
 {
@@ -958,15 +948,15 @@ msmsdcc_irq(int irq, void *dev_id)
 				wake_lock(&host->sdio_wlock);
 			/* only ansyc interrupt can come when clocks are off */
 			writel_relaxed(MCI_SDIOINTMASK, host->base + MMCICLEAR);
-			/* In case of async interrupt we need to add delay as there is subsequent write may happen
-			 @ Line no 969  We need to preserve controller in good state*/
-			msmsdcc_delay_samsung(host);
+			if (host->clk_rate <=
+					msmsdcc_get_min_sup_clk_rate(host))
+				msmsdcc_delay(host);
 		}
 
 		status = readl_relaxed(host->base + MMCISTATUS);
-		status = (readl_relaxed(host->base + MMCIMASK0) & status) & ~(MCI_IRQ_PIO);
 
-		if (status == 0)
+		if (((readl_relaxed(host->base + MMCIMASK0) & status) &
+						(~(MCI_IRQ_PIO))) == 0)
 			break;
 
 #if IRQ_DEBUG
@@ -974,7 +964,10 @@ msmsdcc_irq(int irq, void *dev_id)
 #endif
 		status &= readl_relaxed(host->base + MMCIMASK0);
 		writel_relaxed(status, host->base + MMCICLEAR);
-		msmsdcc_delay_samsung(host);
+		/* Allow clear to take effect*/
+		if (host->clk_rate <=
+				msmsdcc_get_min_sup_clk_rate(host))
+			msmsdcc_delay(host);
 #if IRQ_DEBUG
 		msmsdcc_print_status(host, "irq0-p", status);
 #endif
@@ -1256,6 +1249,10 @@ msmsdcc_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 			rc = clk_set_rate(host->clk, ios->clock);
 			WARN_ON(rc < 0);
 			host->clk_rate = ios->clock;
+			host->reg_write_delay =
+				(1 + ((3 * USEC_PER_SEC) /
+				      (host->clk_rate ? host->clk_rate :
+				       msmsdcc_get_min_sup_clk_rate(host))));
 		}
 		/*
 		 * give atleast 2 MCLK cycles delay for clocks
@@ -1855,6 +1852,15 @@ msmsdcc_probe(struct platform_device *pdev)
 		goto clk_put;
 
 	host->clk_rate = clk_get_rate(host->clk);
+	if (!host->clk_rate)
+		dev_err(&pdev->dev, "Failed to read MCLK\n");
+	/*
+	 * Set the register write delay according to min. clock frequency
+	 * supported and update later when the host->clk_rate changes.
+	 */
+	host->reg_write_delay =
+		(1 + ((3 * USEC_PER_SEC) /
+		      msmsdcc_get_min_sup_clk_rate(host)));
 
 	host->clks_on = 1;
 

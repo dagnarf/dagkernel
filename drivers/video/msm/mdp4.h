@@ -490,6 +490,7 @@ void mdp4_overlay_lcdc_wait4vsync(struct msm_fb_data_type *mfd);
 void mdp4_overlay_lcdc_vsync_push(struct msm_fb_data_type *mfd,
 				struct mdp4_overlay_pipe *pipe);
 void mdp4_overlay_lcdc_set_perf(struct msm_fb_data_type *mfd);
+void mdp4_update_perf_level(u32 perf_level);
 void mdp4_set_perf_level(void);
 void mdp4_mddi_overlay_dmas_restore(void);
 
