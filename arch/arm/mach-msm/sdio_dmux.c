@@ -30,6 +30,8 @@
 #include <linux/skbuff.h>
 #include <linux/wakelock.h>
 #include <linux/debugfs.h>
+#include <linux/smp.h>
+#include <linux/cpumask.h>
 
 #include <mach/sdio_al.h>
 #include <mach/sdio_dmux.h>
