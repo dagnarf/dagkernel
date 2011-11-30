@@ -1080,6 +1080,7 @@ static int hdmi_common_read_edid_block(int block, uint8 *edid_buf)
 		goto error;
 	}
 	print_len = 0x80;
+#ifdef DEBUG
 	for (ndx = 0; ndx < print_len; ndx += 16)
 		DEV_DBG("EDID[%02x-%02x] %02x %02x %02x %02x  "
 			"%02x %02x %02x %02x    %02x %02x %02x %02x  "
@@ -1088,7 +1089,7 @@ static int hdmi_common_read_edid_block(int block, uint8 *edid_buf)
 			b[ndx+4], b[ndx+5], b[ndx+6], b[ndx+7],
 			b[ndx+8], b[ndx+9], b[ndx+10], b[ndx+11],
 			b[ndx+12], b[ndx+13], b[ndx+14], b[ndx+15]);
-
+#endif
 
 error:
 	return status;
