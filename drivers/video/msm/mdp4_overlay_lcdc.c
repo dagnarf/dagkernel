@@ -602,40 +602,23 @@ void mdp4_lcdc_overlay(struct msm_fb_data_type *mfd)
 	uint8 *buf;
 	int bpp;
 	struct mdp4_overlay_pipe *pipe;
-	
-	uint32 data, vg_active=0;
-	
+
 	if (!mfd->panel_power_on)
 		return;
-	
+
 	/* no need to power on cmd block since it's lcdc mode */
 	bpp = fbi->var.bits_per_pixel / 8;
 	buf = (uint8 *) fbi->fix.smem_start;
 	buf += fbi->var.xoffset * bpp +
-	fbi->var.yoffset * fbi->fix.line_length;
-	
+		fbi->var.yoffset * fbi->fix.line_length;
+
 	mutex_lock(&mfd->dma->ov_mutex);
-	
+
 	pipe = lcdc_pipe;
 	pipe->srcp0_addr = (uint32) buf;
 	mdp4_overlay_rgb_setup(pipe);
 	mdp4_overlay_reg_flush(pipe, 1);
 	mdp4_overlay_lcdc_vsync_push(mfd, pipe);
-	
-	// This will check if there is any VG pipe connected to layermixer 0
-	mdp_pipe_ctrl(MDP_CMD_BLOCK, MDP_BLOCK_POWER_ON, FALSE);
-	data = inpdw(MDP_BASE + 0x10100);
-	rmb();
-        if (data & 0xff)
-                 vg_active = 1;
-        else
-                 vg_active = 0;
-	mdp_pipe_ctrl(MDP_CMD_BLOCK, MDP_BLOCK_POWER_OFF, FALSE);
 	mutex_unlock(&mfd->dma->ov_mutex);
-	
-	if(vg_active)
-		yield();
-	
-	//yield();
 	mdp4_stat.kickoff_lcdc++;
 }
