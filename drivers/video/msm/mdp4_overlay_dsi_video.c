@@ -426,6 +426,12 @@ static void mdp4_overlay_dsi_video_wait4event(struct msm_fb_data_type *mfd,
 						int intr_done)
 {
 	unsigned long flag;
+	unsigned int data;
+
+	data = inpdw(MDP_BASE + DSI_VIDEO_BASE);
+	data &= 0x01;
+	if (data == 0)	/* timing generator disabled */
+		return;
 
 	spin_lock_irqsave(&mdp_spin_lock, flag);
 	INIT_COMPLETION(dsi_video_comp); 
@@ -587,7 +593,8 @@ static void mdp4_dsi_video_do_blt(struct msm_fb_data_type *mfd, int enable)
 	 * timing generator
 	 */
 	data = inpdw(MDP_BASE + DSI_VIDEO_BASE);
-	if (data) {	/* timing generatore enabled */	
+	data &= 0x01;
+	if (data) {	/* timing generator enabled */
 		// apply qualcomm patch for writeback side effect
 		//mdp4_overlay_dsi_video_wait4event(mfd, INTR_DMA_P_DONE);	
 		if (dsi_pipe->blt_addr) {
@@ -602,7 +609,7 @@ static void mdp4_dsi_video_do_blt(struct msm_fb_data_type *mfd, int enable)
 	mdp4_overlayproc_cfg(dsi_pipe);
 	mdp4_overlay_dmap_xy(dsi_pipe);
 
-	if (data) {	/* timing generatore enabled */
+	if (data) {	/* timing generator enabled */
 		// apply qualcomm patch for writeback side effect
 		//MDP_OUTP(MDP_BASE + DSI_VIDEO_BASE, 1);
 		//mdp4_overlay_dsi_video_wait4event(mfd, INTR_DMA_P_DONE);
