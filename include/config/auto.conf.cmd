@@ -1,4 +1,5 @@
 deps_config := \
+	lib/xz/Kconfig \
 	lib/Kconfig \
 	drivers/crypto/Kconfig \
 	crypto/async_tx/Kconfig \

@@ -251,12 +251,14 @@ static struct clkctl_l2_speed l2_freq_tbl_v2[] = {
 
 static struct clkctl_acpu_speed acpu_freq_tbl_fast[] = {
 //  { {1, 1},  192000,  ACPU_PLL_8, 3, 1, 0, 0,    L2(1),   812500, 0x03006000},
-  { {1, 1},  27000,   ACPU_PLL_8, 3, 1, 0, 0,    L2(2),   800000, 0x03006000},
+  { {1, 1},  27000,   ACPU_PLL_8, 3, 0, 0, 0,    L2(1),   825000, 0x03006000},
 //  { {1, 1},  108000,   ACPU_SCPLL, 0, 0, 1, 0x06, L2(1),   850000, 0x03006000},
     /* MAX_AXI row is used to source CPU cores and L2 from the AFAB clock. */
   { {0, 0},  MAX_AXI, ACPU_AFAB,  1, 0, 0, 0,    L2(0),   875000, 0x03006000},
-  { {1, 1},  270000,  ACPU_PLL_8, 3, 0, 0, 0,    L2(2),   875000, 0x03006000},
-  { {1, 1},  486000,  ACPU_SCPLL, 0, 0, 1, 0x09, L2(2),   912500, 0x03006000},
+//  { {1, 1},  270000,  ACPU_PLL_8, 3, 0, 0, 0,    L2(2),   875000, 0x03006000},
+  { {1, 1},  384000,  ACPU_PLL_8, 3, 0, 0, 0,    L2(1),   875000, 0x03006000},
+
+//  { {1, 1},  486000,  ACPU_SCPLL, 0, 0, 1, 0x09, L2(2),   912500, 0x03006000},
   { {1, 1},  702000,  ACPU_SCPLL, 0, 0, 1, 0x0D, L2(6),   975000, 0x03006000},
   { {1, 1},  918000,  ACPU_SCPLL, 0, 0, 1, 0x11, L2(10), 1037500, 0x03006000},
   { {1, 1}, 1134000,  ACPU_SCPLL, 0, 0, 1, 0x15, L2(14), 1075000, 0x03006000},
@@ -279,7 +281,7 @@ static struct clkctl_acpu_speed acpu_freq_tbl_fast[] = {
   { {0, 0}, 0 },
 };
 
-#define TABLE_SIZE 16
+#define TABLE_SIZE 15
 
 /* acpu_freq_tbl row to use when reconfiguring SC/L2 PLLs. */
 #define CAL_IDX 1
