@@ -27,7 +27,7 @@
 #include <linux/slab.h>
 #include <linux/earlysuspend.h>
 
-#define _LIMIT_LCD_OFF_CPU_MAX_FREQ_
+//#define _LIMIT_LCD_OFF_CPU_MAX_FREQ_
 
 /*
  * dbs is used in this file as a shortform for demandbased switching
