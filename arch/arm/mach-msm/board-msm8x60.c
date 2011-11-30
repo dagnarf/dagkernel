@@ -144,7 +144,7 @@
 #include <mach/sdio_al.h>
 #include <mach/rpm.h>
 #include <mach/rpm-regulator.h>
-//#include "rpm-regulator.h"
+#include <mach/restart.h>
 
 #include "devices.h"
 //#include "devices-msm8x60.h"
@@ -18782,6 +18782,7 @@ extern unsigned int sec_get_lpm_mode(void);
 static void __init msm8x60_init(struct msm_board_data *board_data)
 {
 	uint32_t soc_platform_version;
+	pmic_reset_irq = PM8058_RESOUT_IRQ(PM8058_IRQ_BASE);
 
 #ifdef CONFIG_BATTERY_SEC
 	is_lpm_boot = sec_get_lpm_mode();
