@@ -350,7 +350,7 @@ struct mdp4_statistic {
 	ulong err_scale;
 	ulong err_format;
 };
-
+struct mdp4_overlay_pipe *mdp4_overlay_ndx2pipe(int ndx);
 #ifdef CONFIG_FB_MSM_OVERLAY_WRITEBACK
 static inline int mdp4_overlay_writeback_setup(struct fb_info *fbi,
 		struct mdp4_overlay_pipe *pipe, uint8 *buf, int bpp)
@@ -405,16 +405,9 @@ void mdp4_mixer_blend_init(int mixer_num);
 void mdp4_vg_qseed_init(int vg_num);
 void mdp4_vg_qseed_init_DMB(int vg_num);
 void mdp4_vg_qseed_init_VideoPlay(int vg_num);
-void mdp4_vg_csc_mv_setup(int vp_num);
-void mdp4_vg_csc_pre_bv_setup(int vp_num);
-void mdp4_vg_csc_post_bv_setup(int vp_num);
-void mdp4_vg_csc_pre_lv_setup(int vp_num);
-void mdp4_vg_csc_post_lv_setup(int vp_num);
-void mdp4_mixer1_csc_mv_setup(void);
-void mdp4_mixer1_csc_pre_bv_setup(void);
-void mdp4_mixer1_csc_post_bv_setup(void);
-void mdp4_mixer1_csc_pre_lv_setup(void);
-void mdp4_mixer1_csc_post_lv_setup(void);
+void mdp4_vg_csc_setup(int vp_num);
+void mdp4_mixer1_csc_setup(void);
+void mdp4_vg_csc_update(struct mdp_csc *p);
 irqreturn_t mdp4_isr(int irq, void *ptr);
 void mdp4_overlay_format_to_pipe(uint32 format, struct mdp4_overlay_pipe *pipe);
 uint32 mdp4_overlay_format(struct mdp4_overlay_pipe *pipe);
