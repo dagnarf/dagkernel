@@ -46,7 +46,7 @@ extern unsigned int sec_get_lpm_mode(void);
 #endif
 
 /* Watchdog pet interval in ms */
-#define PET_DELAY 3000
+#define PET_DELAY 10000
 static unsigned long delay_time;
 static unsigned long long last_pet;
 static unsigned long forced_pets;
