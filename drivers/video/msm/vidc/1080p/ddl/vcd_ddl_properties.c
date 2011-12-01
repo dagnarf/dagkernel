@@ -1665,8 +1665,11 @@ u32 ddl_set_default_decoder_buffer_req(struct ddl_decoder_data *decoder,
 
 	if (!decoder->codec.codec)
 		return false;
-	min_dpb = ddl_decoder_min_num_dpb(decoder);
 	if (estimate) {
+		if (!decoder->cont_mode)
+			min_dpb = ddl_decoder_min_num_dpb(decoder);
+		else
+			min_dpb = 5;
 		frame_size = &decoder->client_frame_size;
 		output_buf_req = &decoder->client_output_buf_req;
 		input_buf_req = &decoder->client_input_buf_req;
@@ -1675,7 +1678,6 @@ u32 ddl_set_default_decoder_buffer_req(struct ddl_decoder_data *decoder,
 					(!decoder->progressive_only),
 					decoder->hdr.decoding, NULL);
 	} else {
-		/*** Qcom patch TestSBA_M8260AAABQNLZA3055G_Samsung_Celox_SKT_08012011_Case00576919 ***/
 		frame_size = &decoder->frame_size;
 		output_buf_req = &decoder->actual_output_buf_req;
 		input_buf_req = &decoder->actual_input_buf_req;
@@ -1684,7 +1686,7 @@ u32 ddl_set_default_decoder_buffer_req(struct ddl_decoder_data *decoder,
 	}
 	memset(output_buf_req, 0,
 		sizeof(struct vcd_buffer_requirement));
-	if ((!estimate && !decoder->idr_only_decoding) || (decoder->cont_mode))
+	if (!estimate && !decoder->idr_only_decoding && !decoder->cont_mode)
 		output_buf_req->actual_count = min_dpb + 4;
 	else
 		output_buf_req->actual_count = min_dpb;
