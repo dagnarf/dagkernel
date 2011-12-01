@@ -28,6 +28,7 @@
 #include <linux/slab.h>
 #include <linux/ratelimit.h>
 #include <linux/delay.h>
+#include <linux/wakelock.h>
 
 #ifdef CONFIG_SEC_DEBUG_PM8058_ADC	
 #include <linux/timer.h>
@@ -75,6 +76,9 @@ struct pmic8058_adc {
 	struct adc_conv_slot conv_queue_elements[MAX_QUEUE_LENGTH];
 	int xoadc_num;
 	struct msm_xo_voter *adc_voter;
+	struct wake_lock adc_wakelock;
+	/* flag to warn/bug if wakelocks are taken after suspend_noirq */
+	int msm_suspend_check;
 #ifdef CONFIG_SEC_DEBUG_PM8058_ADC	
 	struct timer_list	adc_timer;
 	int adc_request_count;
@@ -140,7 +144,7 @@ void pm8058_xoadc_slot_request(uint32_t adc_instance,
 EXPORT_SYMBOL(pm8058_xoadc_slot_request);
 
 static int32_t pm8058_xoadc_arb_cntrl(uint32_t arb_cntrl,
-					uint32_t adc_instance)
+				uint32_t adc_instance, uint32_t channel)
 {
 	struct pmic8058_adc *adc_pmic = pmic_adc[adc_instance];
 	int i, rc;
@@ -151,9 +155,13 @@ static int32_t pm8058_xoadc_arb_cntrl(uint32_t arb_cntrl,
 			ADC_ARB_USRP_CNTRL_RSV4;
 
 	if (arb_cntrl) {
+		if (adc_pmic->msm_suspend_check)
+			pr_err("XOADC request being made after suspend irq "
+				 "with channel id:%d\n", channel);
 		data_arb_cntrl |= ADC_ARB_USRP_CNTRL_EN_ARB;
 		msm_xo_mode_vote(adc_pmic->adc_voter, MSM_XO_MODE_ON);
 		adc_pmic->pdata->xoadc_mpp_config();
+		wake_lock(&adc_pmic->adc_wakelock);
 	}
 
 	/* Write twice to the CNTRL register for the arbiter settings
@@ -170,8 +178,10 @@ static int32_t pm8058_xoadc_arb_cntrl(uint32_t arb_cntrl,
 	pr_info("PM8058:ADC:Arb on/off:%d\n", arb_cntrl);
 #endif
 
-	if (!arb_cntrl)
+	if (!arb_cntrl) {
 		msm_xo_mode_vote(adc_pmic->adc_voter, MSM_XO_MODE_OFF);
+		wake_unlock(&adc_pmic->adc_wakelock);
+	}
 
 	return 0;
 }
@@ -197,7 +207,7 @@ static int32_t pm8058_xoadc_configure(uint32_t adc_instance,
 	pm8058_read(adc_pmic->pm_chip, 0x1c3, &adc_request_RT_before, 1); 
 #endif
 
-	rc = pm8058_xoadc_arb_cntrl(1, adc_instance);
+	rc = pm8058_xoadc_arb_cntrl(1, adc_instance, slot->chan_path);
 	if (rc < 0) {
 		pr_info("%s: Configuring ADC Arbiter"
 				"enable failed\n", __func__);
@@ -528,7 +538,7 @@ int32_t pm8058_xoadc_read_adc_code(uint32_t adc_instance, int32_t *data)
 	/* Default value for switching off the arbiter after reading
 	   the ADC value. Bit 0 set to 0. */
 	if (adc_pmic->xoadc_queue_count == 0) {
-		rc = pm8058_xoadc_arb_cntrl(0, adc_instance);
+		rc = pm8058_xoadc_arb_cntrl(0, adc_instance, CHANNEL_MUXOFF);
 		if (rc < 0) {
 			pr_debug("%s: Configuring ADC Arbiter disable"
 						"failed\n", __func__);
@@ -743,6 +753,36 @@ int32_t pm8058_xoadc_calibrate(uint32_t dev_instance,
 }
 EXPORT_SYMBOL(pm8058_xoadc_calibrate);
 
+#ifdef CONFIG_PM
+static int pm8058_xoadc_suspend_noirq(struct device *dev)
+{
+	struct platform_device *pdev = to_platform_device(dev);
+	struct pmic8058_adc *adc_pmic = platform_get_drvdata(pdev);
+
+	adc_pmic->msm_suspend_check = 1;
+
+	return 0;
+}
+
+static int pm8058_xoadc_resume_noirq(struct device *dev)
+{
+	struct platform_device *pdev = to_platform_device(dev);
+	struct pmic8058_adc *adc_pmic = platform_get_drvdata(pdev);
+
+	adc_pmic->msm_suspend_check = 0;
+
+	return 0;
+}
+
+static const struct dev_pm_ops pm8058_xoadc_dev_pm_ops = {
+	.suspend_noirq = pm8058_xoadc_suspend_noirq,
+	.resume_noirq = pm8058_xoadc_resume_noirq,
+};
+
+#define PM8058_XOADC_DEV_PM_OPS	(&pm8058_xoadc_dev_pm_ops)
+#else
+#define PM8058_XOADC_DEV_PM_OPS NULL
+#endif
 #ifdef CONFIG_SEC_DEBUG_PM8058_ADC	
 static struct regulator *vreg_ldo18_adc_1;
 
@@ -824,6 +864,7 @@ static int __devexit pm8058_xoadc_teardown(struct platform_device *pdev)
 #endif
 //	del_timer(&adc_pmic->adc_timer);
 #endif
+	wake_lock_destroy(&adc_pmic->adc_wakelock);
 	msm_xo_put(adc_pmic->adc_voter);
 	platform_set_drvdata(pdev, adc_pmic->pm_chip);
 	device_init_wakeup(&pdev->dev, 0);
@@ -943,6 +984,9 @@ static int __devinit pm8058_xoadc_probe(struct platform_device *pdev)
 		}
 	}
 
+	wake_lock_init(&adc_pmic->adc_wakelock, WAKE_LOCK_SUSPEND,
+					"pmic8058_xoadc_wakelock");
+
 #ifdef CONFIG_SEC_DEBUG_PM8058_ADC	
 //	setup_timer(&adc_pmic->adc_timer, adc_dbg_info_timer, 0);
 #endif
@@ -968,6 +1012,7 @@ static struct platform_driver pm8058_xoadc_driver = {
 	.driver = {
 		.name = "pm8058-xoadc",
 		.owner = THIS_MODULE,
+		.pm = PM8058_XOADC_DEV_PM_OPS,
 	},
 };
 
