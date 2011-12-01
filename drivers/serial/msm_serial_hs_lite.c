@@ -42,6 +42,7 @@
 #include <linux/debugfs.h>
 #include <mach/board.h>
 #include <mach/msm_serial_hs_lite.h>
+#include <mach/msm_watchdog.h>
 #include <asm/mach-types.h>
 #include "msm_serial_hs_hwreg.h"
 
