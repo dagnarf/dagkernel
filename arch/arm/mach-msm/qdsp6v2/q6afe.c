@@ -56,8 +56,8 @@ static int32_t afe_callback(struct apr_client_data *data, void *priv)
 	if (data->payload_size) {
 		uint32_t *payload;
 		payload = data->payload;
-		pr_debug("%s: opcode = 0x%x cmd = 0x%x status = 0x%x\n", __func__,
-					data->opcode,payload[0], payload[1]);
+		pr_debug("%s: cmd = 0x%x status = 0x%x\n", __func__,
+					payload[0], payload[1]);
 		if (data->opcode == APR_BASIC_RSP_RESULT) {
 			switch (payload[0]) {
 			case AFE_PORT_AUDIO_IF_CONFIG:
@@ -85,7 +85,7 @@ static int32_t afe_callback(struct apr_client_data *data, void *priv)
 int afe_validate_port(u16 port_id)
 {
 	int ret;
-	pr_info("%s:port_id = %x\n", __func__, port_id);
+
 	switch (port_id) {
 	case PRIMARY_I2S_RX:
 	case PRIMARY_I2S_TX:
@@ -723,11 +723,11 @@ static int __init afe_init(void)
 	this_afe.apr = NULL;
 #ifdef CONFIG_DEBUG_FS
 	debugfs_afelb = debugfs_create_file("afe_loopback",
-	S_IFREG | S_IWUSR |S_IWGRP, NULL, (void *) "afe_loopback",
+	S_IFREG | S_IWUGO, NULL, (void *) "afe_loopback",
 	&afe_debug_fops);
 
 	debugfs_afelb_gain = debugfs_create_file("afe_loopback_gain",
-	S_IFREG | S_IWUSR |S_IWGRP, NULL, (void *) "afe_loopback_gain",
+	S_IFREG | S_IWUGO, NULL, (void *) "afe_loopback_gain",
 	&afe_debug_fops);
 
 

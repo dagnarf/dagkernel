@@ -325,7 +325,7 @@ int adm_matrix_map(int session_id, int path, int num_copps,
 
 	for (i = 0; i < num_copps; i++) {
 		int tmp;
-		tmp = afe_get_port_index((unsigned short)port_id[i]);
+		tmp = afe_get_port_index(port_id[i]);
 
 		pr_debug("%s: port_id[%d]: %d, index: %d\n", __func__, i,
 			 port_id[i], tmp);

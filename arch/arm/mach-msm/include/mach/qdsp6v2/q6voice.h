@@ -529,6 +529,10 @@ struct cvs_start_record_cmd {
 /* Media types */
 #define VSS_MEDIA_ID_EVRC_MODEM		0x00010FC2
 /* 80-VF690-47 CDMA enhanced variable rate vocoder modem format. */
+#define VSS_MEDIA_ID_4GV_NB_MODEM  0x00010FC3
+/* 4GV Narrowband modem format */
+#define VSS_MEDIA_ID_4GV_WB_MODEM  0x00010FC4
+/* 4GV Wideband modem format */
 #define VSS_MEDIA_ID_AMR_NB_MODEM	0x00010FC6
 /* 80-VF690-47 UMTS AMR-NB vocoder modem format. */
 #define VSS_MEDIA_ID_AMR_WB_MODEM	0x00010FC7
@@ -735,12 +739,17 @@ typedef void (*dl_cb_fn)(uint8_t *voc_pkt,
 			 uint32_t *pkt_len,
 			 void *private_data);
 
+struct q_min_max_rate {
+	uint32_t min_rate;
+	uint32_t max_rate;
+};
 
 struct mvs_driver_info {
 	uint32_t media_type;
 	uint32_t rate;
 	uint32_t network_type;
 	uint32_t dtx_mode;
+	struct q_min_max_rate q_min_max_rate;
 	ul_cb_fn ul_cb;
 	dl_cb_fn dl_cb;
 	void *private_data;
@@ -758,26 +767,50 @@ struct incall_music_info {
 
 struct voice_data {
 	int voc_state;/*INIT, CHANGE, RELEASE, RUN */
-	uint32_t voc_path;
-	uint32_t adsp_version;
 
 	wait_queue_head_t mvm_wait;
 	wait_queue_head_t cvs_wait;
 	wait_queue_head_t cvp_wait;
 
-	uint32_t device_events;
-
 	/* cache the values related to Rx and Tx */
 	struct device_data dev_rx;
 	struct device_data dev_tx;
 
-	/* these default values are for all devices */
+	/* call status */
+	int v_call_status; /* Start or End */
+
+	u32 mvm_state;
+	u32 cvs_state;
+	u32 cvp_state;
+
+	/* Handle to MVM */
+	u16 mvm_handle;
+	/* Handle to CVS */
+	u16 cvs_handle;
+	/* Handle to CVP */
+	u16 cvp_handle;
+
+	struct mutex lock;
+
+	struct incall_rec_info rec_info;
+
+	struct incall_music_info music_info;
+
+	u16 session_id;
+};
+
+#define MAX_VOC_SESSIONS 2
+#define SESSION_ID_BASE 0xFFF0
+
+struct common_data {
+	uint32_t voc_path;
+	uint32_t adsp_version;
+	uint32_t device_events;
+
+	/* These default values are for all devices */
 	uint32_t default_mute_val;
 	uint32_t default_vol_val;
 	uint32_t default_sample_val;
-
-	/* call status */
-	int v_call_status; /* Start or End */
 
 	/* APR to MVM in the modem */
 	void *apr_mvm;
@@ -793,31 +826,11 @@ struct voice_data {
 	/* APR to CVP in the Q6 */
 	void *apr_q6_cvp;
 
-	u32 mvm_state;
-	u32 cvs_state;
-	u32 cvp_state;
-
-	/* Handle to MVM in the modem */
-	u16 mvm_handle;
-	/* Handle to CVS in the modem */
-	u16 cvs_handle;
-	/* Handle to CVP in the modem */
-	u16 cvp_handle;
-
-	/* Handle to MVM in the Q6 */
-	u16 mvm_q6_handle;
-	/* Handle to CVS in the Q6 */
-	u16 cvs_q6_handle;
-	/* Handle to CVP in the Q6 */
-	u16 cvp_q6_handle;
-
-	struct mutex lock;
+	struct mutex common_lock;
 
 	struct mvs_driver_info mvs_info;
 
-	struct incall_rec_info rec_info;
-
-	struct incall_music_info music_info;
+	struct voice_data voice[MAX_VOC_SESSIONS];
 };
 
 int voice_set_voc_path_full(uint32_t set);
@@ -832,9 +845,12 @@ void voice_register_mvs_cb(ul_cb_fn ul_cb,
 void voice_config_vocoder(uint32_t media_type,
 			  uint32_t rate,
 			  uint32_t network_type,
-			  uint32_t dtx_mode);
+			  uint32_t dtx_mode,
+			  struct q_min_max_rate q_min_max_rate);
 
 int voice_start_record(uint32_t rec_mode, uint32_t set);
 
 int voice_start_playback(uint32_t set);
+
+u16 voice_get_session_id(const char *name);
 #endif

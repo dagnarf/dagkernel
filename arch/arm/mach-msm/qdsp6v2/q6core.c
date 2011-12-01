@@ -404,7 +404,7 @@ static int __init core_init(void)
 	core_handle_q = NULL;
 
 #ifdef CONFIG_DEBUG_FS
-	dentry = debugfs_create_file("apr", S_IFREG |  S_IWUSR |S_IWGRP,
+	dentry = debugfs_create_file("apr", S_IFREG | S_IWUGO,
 				NULL, (void *) NULL, &apr_debug_fops);
 #endif /* CONFIG_DEBUG_FS */
 

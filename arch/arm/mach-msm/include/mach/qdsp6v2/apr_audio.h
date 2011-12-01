@@ -691,6 +691,11 @@ struct asm_sbr_ps {
 	u32 enable;
 };
 
+struct asm_dual_mono {
+	u16 sce_left;
+	u16 sce_right;
+};
+
 struct asm_encode_cfg_blk {
 	u32 frames_per_buf;
 	u32 format_id;
@@ -745,6 +750,7 @@ struct asm_stream_cmd_open_read {
 #define G711_ALAW_FS 0x00010BF7
 #define G711_MLAW_FS 0x00010BF8
 #define G711_PCM_FS  0x00010BF9
+#define MPEG4_MULTI_AAC 0x00010D86
 
 #define ASM_ENCDEC_SBCRATE         0x00010C13
 #define ASM_ENCDEC_IMMDIATE_DECODE 0x00010C14
@@ -778,6 +784,8 @@ struct asm_stream_cmd_open_read_write {
 #define ASM_STREAM_CMD_GET_ENCDEC_PARAM                  0x00010C11
 #define ASM_ENCDEC_CFG_BLK_ID				 0x00010C2C
 #define ASM_ENABLE_SBR_PS				 0x00010C63
+#define ASM_CONFIGURE_DUAL_MONO			 0x00010C64
+
 struct asm_stream_cmd_encdec_cfg_blk{
 	struct apr_hdr              hdr;
 	u32                         param_id;
@@ -804,6 +812,15 @@ struct asm_stream_cmd_encdec_sbr{
 	u32            param_size;
 	struct asm_sbr_ps sbr_ps;
 } __attribute__((packed));
+
+struct asm_stream_cmd_encdec_dualmono {
+	struct apr_hdr hdr;
+	u32            param_id;
+	u32            param_size;
+	struct asm_dual_mono channel_map;
+} __packed;
+
+
 
 #define ASM_STREAM _CMD_ADJUST_SAMPLES                   0x00010C0A
 struct asm_stream_cmd_adjust_samples{
