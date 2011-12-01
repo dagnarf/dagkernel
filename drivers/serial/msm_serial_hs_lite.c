@@ -1026,6 +1026,7 @@ static void msm_hsl_console_write(struct console *co, const char *s,
 	msm_hsl_write(port, 0, UARTDM_IMR_ADDR);
 	uart_console_write(port, s, count, msm_hsl_console_putchar);
 	msm_hsl_write(port, msm_hsl_port->imr, UARTDM_IMR_ADDR);
+	ratelimited_pet_watchdog();
 	if (locked == 1)
 		spin_unlock(&port->lock);
 }
