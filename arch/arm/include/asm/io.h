@@ -47,7 +47,7 @@ extern void __raw_readsb(const void __iomem *addr, void *data, int bytelen);
 extern void __raw_readsw(const void __iomem *addr, void *data, int wordlen);
 extern void __raw_readsl(const void __iomem *addr, void *data, int longlen);
 
-
+#ifdef CONFIG_SEC_DEBUG
 #include <mach/sec_debug.h>
 #ifdef CONFIG_SEC_DEBUG_REGRW_LOG
 #define __raw_writeb(v,a)	(__chk_io_ptr(a), sec_debug_reg_write(a,v, sizeof(unsigned char)))
@@ -65,8 +65,8 @@ extern void __raw_readsl(const void __iomem *addr, void *data, int longlen);
 #define __raw_readb(a)		(__chk_io_ptr(a), *(volatile unsigned char __force  *)(a))
 #define __raw_readw(a)		(__chk_io_ptr(a), *(volatile unsigned short __force *)(a))
 #define __raw_readl(a)		(__chk_io_ptr(a), *(volatile unsigned int __force   *)(a))
-#endif
-
+#endif //CONFIG_SEC_DEBUG_REGRW_LOG
+#endif //CONFIG_SEC_DEBUG
 /*
  * Architecture ioremap implementation.
  */

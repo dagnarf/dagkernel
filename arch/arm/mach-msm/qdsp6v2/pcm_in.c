@@ -448,6 +448,8 @@ static int pcm_in_release(struct inode *inode, struct file *file)
 	int rc = 0;
 	struct pcm *pcm = file->private_data;
 
+	pr_info("[%s:%s] release session id[%d]\n", __MM_FILE__,
+		__func__, pcm->ac->session);
 	mutex_lock(&pcm->lock);
 
 	if ((pcm->rec_mode != VOC_REC_NONE) && atomic_read(&pcm->in_enabled)) {
@@ -462,10 +464,6 @@ static int pcm_in_release(struct inode *inode, struct file *file)
 	mutex_unlock(&pcm->lock);
 
 	rc = pcm_in_disable(pcm);
-
-	pr_info("[%s:%s] release session id[%d]\n", __MM_FILE__,
-				__func__, pcm->ac->session);
-
 	 msm_clear_session_id(pcm->ac->session);
 	q6asm_audio_client_free(pcm->ac);
 
