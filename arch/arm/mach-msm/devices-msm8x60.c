@@ -625,7 +625,7 @@ static struct msm_bus_vectors grp3d_nominal_low_vectors[] = {
 		.src = MSM_BUS_MASTER_GRAPHICS_3D,
 		.dst = MSM_BUS_SLAVE_EBI_CH0,
 		.ab = 0,
-		.ib = 1500000000U,
+		.ib = 1400000000U,
 	},
 };
 
@@ -634,7 +634,7 @@ static struct msm_bus_vectors grp3d_nominal_high_vectors[] = {
 		.src = MSM_BUS_MASTER_GRAPHICS_3D,
 		.dst = MSM_BUS_SLAVE_EBI_CH0,
 		.ab = 0,
-		.ib = 2208000000U,
+		.ib = 2108000000U,
 	},
 };
 
@@ -643,7 +643,7 @@ static struct msm_bus_vectors grp3d_max_vectors[] = {
 		.src = MSM_BUS_MASTER_GRAPHICS_3D,
 		.dst = MSM_BUS_SLAVE_EBI_CH0,
 		.ab = 0,
-		.ib = 2684000000U,
+		.ib = 2584000000U,
 	},
 };
 
@@ -691,7 +691,7 @@ static struct msm_bus_vectors grp2d0_max_vectors[] = {
 		.src = MSM_BUS_MASTER_GRAPHICS_2D_CORE0,
 		.dst = MSM_BUS_SLAVE_EBI_CH0,
 		.ab = 0,
-		.ib = 1400000000U,
+		.ib = 1200000000U,
 	},
 };
 
@@ -726,7 +726,7 @@ static struct msm_bus_vectors grp2d1_max_vectors[] = {
 		.src = MSM_BUS_MASTER_GRAPHICS_2D_CORE1,
 		.dst = MSM_BUS_SLAVE_EBI_CH0,
 		.ab = 0,
-		.ib = 1400000000U,
+		.ib = 1200000000U,
 	},
 };
 
@@ -1219,10 +1219,17 @@ static struct resource resources_sdc1[] = {
 		.flags	= IORESOURCE_IRQ,
 	},
 	{
+		.name	= "sdcc_dma_chnl",
 		.start	= DMOV_SDC1_CHAN,
 		.end	= DMOV_SDC1_CHAN,
 		.flags	= IORESOURCE_DMA,
 	},
+	{
+		.name	= "sdcc_dma_crci",
+		.start	= DMOV_SDC1_CRCI,
+		.end	= DMOV_SDC1_CRCI,
+		.flags	= IORESOURCE_DMA,
+	}
 };
 
 static struct resource resources_sdc2[] = {
@@ -1237,10 +1244,17 @@ static struct resource resources_sdc2[] = {
 		.flags	= IORESOURCE_IRQ,
 	},
 	{
+		.name	= "sdcc_dma_chnl",
 		.start	= DMOV_SDC2_CHAN,
 		.end	= DMOV_SDC2_CHAN,
 		.flags	= IORESOURCE_DMA,
 	},
+	{
+		.name	= "sdcc_dma_crci",
+		.start	= DMOV_SDC2_CRCI,
+		.end	= DMOV_SDC2_CRCI,
+		.flags	= IORESOURCE_DMA,
+	}
 };
 
 static struct resource resources_sdc3[] = {
@@ -1255,8 +1269,15 @@ static struct resource resources_sdc3[] = {
 		.flags	= IORESOURCE_IRQ,
 	},
 	{
+		.name	= "sdcc_dma_chnl",
 		.start	= DMOV_SDC3_CHAN,
 		.end	= DMOV_SDC3_CHAN,
+		.flags	= IORESOURCE_DMA,
+	},
+	{
+		.name	= "sdcc_dma_crci",
+		.start	= DMOV_SDC3_CRCI,
+		.end	= DMOV_SDC3_CRCI,
 		.flags	= IORESOURCE_DMA,
 	},
 };
@@ -1273,8 +1294,15 @@ static struct resource resources_sdc4[] = {
 		.flags	= IORESOURCE_IRQ,
 	},
 	{
+		.name	= "sdcc_dma_chnl",
 		.start	= DMOV_SDC4_CHAN,
 		.end	= DMOV_SDC4_CHAN,
+		.flags	= IORESOURCE_DMA,
+	},
+	{
+		.name	= "sdcc_dma_crci",
+		.start	= DMOV_SDC4_CRCI,
+		.end	= DMOV_SDC4_CRCI,
 		.flags	= IORESOURCE_DMA,
 	},
 };
@@ -1291,8 +1319,15 @@ static struct resource resources_sdc5[] = {
 		.flags	= IORESOURCE_IRQ,
 	},
 	{
+		.name	= "sdcc_dma_chnl",
 		.start	= DMOV_SDC5_CHAN,
 		.end	= DMOV_SDC5_CHAN,
+		.flags	= IORESOURCE_DMA,
+	},
+	{
+		.name	= "sdcc_dma_crci",
+		.start	= DMOV_SDC5_CRCI,
+		.end	= DMOV_SDC5_CRCI,
 		.flags	= IORESOURCE_DMA,
 	},
 };
