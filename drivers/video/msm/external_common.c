@@ -337,13 +337,13 @@ static ssize_t hdmi_common_rda_3d_present(struct device *dev,
 }
 
 static ssize_t hdmi_common_rda_hdcp_present(struct device *dev,
-       struct device_attribute *attr, char *buf)
+	struct device_attribute *attr, char *buf)
 {
-       ssize_t ret = snprintf(buf, PAGE_SIZE, "%d\n",
-               external_common_state->present_hdcp);
-       DEV_DBG("%s: '%d'\n", __func__,
-                       external_common_state->present_hdcp);
-       return ret;
+	ssize_t ret = snprintf(buf, PAGE_SIZE, "%d\n",
+		external_common_state->present_hdcp);
+	DEV_DBG("%s: '%d'\n", __func__,
+			external_common_state->present_hdcp);
+	return ret;
 }
 #endif
 
