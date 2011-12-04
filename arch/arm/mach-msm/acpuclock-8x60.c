@@ -649,8 +649,8 @@ ssize_t acpuclk_get_l2_levels_str(char *buf) {
 	if (buf) {
 		mutex_lock(&drv_state.lock);
 
-		for (i = 0; l2_freq_tbl_v2[i].khz; i++) {
-			len += sprintf(buf + len, "%8u: %8d %8d\n", l2_freq_tbl_v2[i].khz, l2_freq_tbl_v2[i].vdd_dig, l2_freq_tbl_v2[i].vdd_mem );
+		for (i = 0; l2_freq_tbl[i].khz; i++) {
+			len += sprintf(buf + len, "%8u: %8d %8d\n", l2_freq_tbl[i].khz, l2_freq_tbl[i].vdd_dig, l2_freq_tbl[i].vdd_mem );
 		}
 
 		mutex_unlock(&drv_state.lock);
@@ -666,10 +666,10 @@ void acpuclk_set_l2(unsigned int khz, int vdd_uv_dig, int vdd_uv_mem) {
 
 	mutex_lock(&drv_state.lock);
 
-	for (i = 0; l2_freq_tbl_v2[i].khz; i++) {
+	for (i = 0; l2_freq_tbl[i].khz; i++) {
 		if (khz == 0) {
-			new_vdd_uv_dig = min(max((l2_freq_tbl_v2[i].vdd_dig + vdd_uv_dig), (unsigned int)MIN_VDD_L2), (unsigned int)MAX_VDD_L2);
-			new_vdd_uv_mem = min(max((l2_freq_tbl_v2[i].vdd_mem + vdd_uv_mem), (unsigned int)MIN_VDD_L2), (unsigned int)MAX_VDD_L2);
+			new_vdd_uv_dig = min(max((l2_freq_tbl[i].vdd_dig + vdd_uv_dig), (unsigned int)MIN_VDD_L2), (unsigned int)MAX_VDD_L2);
+			new_vdd_uv_mem = min(max((l2_freq_tbl[i].vdd_mem + vdd_uv_mem), (unsigned int)MIN_VDD_L2), (unsigned int)MAX_VDD_L2);
 		}
 		else if (l2_freq_tbl_v2[i].khz == khz) {
 			new_vdd_uv_dig = min(max((unsigned int)vdd_uv_dig, (unsigned int)MIN_VDD_L2), (unsigned int)MAX_VDD_L2);
@@ -680,8 +680,8 @@ void acpuclk_set_l2(unsigned int khz, int vdd_uv_dig, int vdd_uv_mem) {
 			continue;
 		}
 
-		l2_freq_tbl_v2[i].vdd_dig = new_vdd_uv_dig;
-		l2_freq_tbl_v2[i].vdd_mem = new_vdd_uv_mem;
+		l2_freq_tbl[i].vdd_dig = new_vdd_uv_dig;
+		l2_freq_tbl[i].vdd_mem = new_vdd_uv_mem;
 		//pr_err("Would have set L2 khz %d to vdd_dig: %u vdd_mem: %u\n", l2_freq_tbl_v2[i].khz, new_vdd_uv_dig, new_vdd_uv_mem);
 	}
 
