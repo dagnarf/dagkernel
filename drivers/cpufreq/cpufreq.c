@@ -693,6 +693,13 @@ static ssize_t show_bios_limit(struct cpufreq_policy *policy, char *buf)
 	}
 	return sprintf(buf, "%u\n", policy->cpuinfo.max_freq);
 }
+#ifdef CONFIG_L2_VOLTAGE_TABLE
+extern ssize_t acpuclk_get_l2_levels_str(char *buf);
+
+static ssize_t show_l2_levels(struct kobject *a, struct attribute *b, char *buf) {
+	return acpuclk_get_l2_levels_str(buf);
+}
+#endif //CONFIG_L2_VOLTAGE_TABLE
 
 #ifdef CONFIG_CPU_VOLTAGE_TABLE
 
@@ -771,6 +778,9 @@ cpufreq_freq_attr_rw(scaling_max_freq);
 cpufreq_freq_attr_rw(scaling_governor);
 cpufreq_freq_attr_rw(scaling_setspeed);
 
+#ifdef CONFIG_L2_VOLTAGE_TABLE
+define_one_global_ro(l2_levels);
+#endif
 #ifdef CONFIG_CPU_VOLTAGE_TABLE
 define_one_global_rw(vdd_levels);
 #endif
@@ -789,7 +799,17 @@ static struct attribute *default_attrs[] = {
 	&scaling_setspeed.attr,
 	NULL
 };
+#ifdef CONFIG_L2_VOLTAGE_TABLE
+static struct attribute *l2tbl_attrs[] = {
+	&l2_levels.attr,
+	NULL
+};
 
+static struct attribute_group l2tbl_attr_group = {
+	.attrs = l2tbl_attrs,
+	.name = "l2_table",
+};
+#endif
 #ifdef CONFIG_CPU_VOLTAGE_TABLE
 static struct attribute *vddtbl_attrs[] = {
 	&vdd_levels.attr,
@@ -2265,6 +2285,10 @@ static int __init cpufreq_core_init(void)
 	cpufreq_global_kobject = kobject_create_and_add("cpufreq",
 						&cpu_sysdev_class.kset.kobj);
 	BUG_ON(!cpufreq_global_kobject);
+
+#ifdef CONFIG_L2_VOLTAGE_TABLE
+	rc = sysfs_create_group(cpufreq_global_kobject, &l2tbl_attr_group);
+#endif	/* CONFIG_L2_VOLTAGE_TABLE */
 
 #ifdef CONFIG_CPU_VOLTAGE_TABLE
 	rc = sysfs_create_group(cpufreq_global_kobject, &vddtbl_attr_group);

@@ -190,7 +190,6 @@ static struct msm_bus_scale_pdata bus_client_pdata = {
 static uint32_t bus_perf_client;
 
 /* L2 frequencies = 2 * 27 MHz * L_VAL */
-#ifndef CONFIG_DAG
 static struct clkctl_l2_speed l2_freq_tbl_v2[] = {
 	[0]  = { MAX_AXI, 0, 0,    1000000, 1100000, 0},
 	[1]  = { 432000,  1, 0x08, 1000000, 1100000, 0},
@@ -216,37 +215,8 @@ static struct clkctl_l2_speed l2_freq_tbl_v2[] = {
 	[21] = {1755000,  1, 0x20, 1312500, 1325000, 5},
 	[22] = {1782000,  1, 0x21, 1312500, 1325000, 5},
 	[23] = {1836000,  1, 0x22, 1312500, 1325000, 5},
-
+	[24] = {0},
 };
-#else
-static struct clkctl_l2_speed l2_freq_tbl_v2[] = {
-	[0]  = { MAX_AXI, 0, 0,     900000, 1000000, 0},
-	[1]  = { 432000,  1, 0x08,  900000, 1000000, 0},
-	[2]  = { 486000,  1, 0x09,  900000, 1000000, 0},
-	[3]  = { 540000,  1, 0x0A,  900000, 1000000, 0},
-	[4]  = { 594000,  1, 0x0B,  900000, 1000000, 0},
-	[5]  = { 648000,  1, 0x0C,  900000, 1000000, 1},
-	[6]  = { 702000,  1, 0x0D, 1000000, 1100000, 1},
-	[7]  = { 756000,  1, 0x0E, 1000000, 1100000, 1},
-	[8]  = { 810000,  1, 0x0F, 1000000, 1100000, 1},
-	[9]  = { 864000,  1, 0x10, 1000000, 1100000, 1},
-	[10] = { 918000,  1, 0x11, 1000000, 1100000, 2},
-	[11] = { 972000,  1, 0x12, 1000000, 1100000, 2},
-	[12] = {1026000,  1, 0x13, 1000000, 1100000, 2},
-	[13] = {1080000,  1, 0x14, 1100000, 1200000, 2},
-	[14] = {1134000,  1, 0x15, 1100000, 1200000, 2},
-	[15] = {1188000,  1, 0x16, 1100000, 1200000, 3},
-	[16] = {1242000,  1, 0x17, 1150000, 1212500, 3},
-	[17] = {1404000,  1, 0x1A, 1150000, 1212500, 3},
-	[18] = {1620000,  1, 0x1E, 1150000, 1212500, 4},
-	[19] = {1674000,  1, 0x1F, 1150000, 1212500, 4},
-	[20] = {1728000,  1, 0x20, 1200000, 1212500, 5},
-	[21] = {1755000,  1, 0x20, 1212500, 1225000, 5},
-	[22] = {1782000,  1, 0x21, 1212500, 1225000, 5},
-	[23] = {1836000,  1, 0x22, 1212500, 1225000, 5},
-};
-#endif
-
 #define L2(x) (&l2_freq_tbl_v2[(x)])
 
 static struct clkctl_acpu_speed acpu_freq_tbl_fast[] = {
@@ -669,6 +639,23 @@ out:
 		mutex_unlock(&drv_state.lock);
 	return rc;
 }
+#ifdef CONFIG_L2_VOLTAGE_TABLE
+ssize_t acpuclk_get_l2_levels_str(char *buf) {
+
+	int i, len = 0;
+
+	if (buf) {
+		mutex_lock(&drv_state.lock);
+
+		for (i = 0; l2_freq_tbl_v2[i].khz; i++) {
+			len += sprintf(buf + len, "%8u: %8d %8d\n", l2_freq_tbl_v2[i].khz, l2_freq_tbl_v2[i].vdd_dig, l2_freq_tbl_v2[i].vdd_mem );
+		}
+
+		mutex_unlock(&drv_state.lock);
+	}
+	return len;
+}
+#endif //CONFIG_L2_VOLTAGE_TABLE
 
 #ifdef CONFIG_CPU_VOLTAGE_TABLE
 
