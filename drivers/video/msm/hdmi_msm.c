@@ -1566,10 +1566,10 @@ again:
 	 *    Read HDMI_I2C_DATA with the following fields set
 	 *    RW = 0x1 (read)
 	 *    DATA = BCAPS (this is field where data is pulled from)
-	 *    INDEX = 0x3 (where the data has been placed in buffer by hardware)
+	 *    INDEX = 0x5 (where the data has been placed in buffer by hardware)
 	 *    INDEX_WRITE = 0x1 (explicitly define offset) */
 	/* Write this data to DDC buffer */
-	HDMI_OUTP_ND(0x0238, 0x1 | (3 << 16) | (1 << 31));
+	HDMI_OUTP_ND(0x0238, 0x1 | (5 << 16) | (1 << 31));
 
 	/* Discard first byte */
 	HDMI_INP_ND(0x0238);
