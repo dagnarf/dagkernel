@@ -695,9 +695,68 @@ static ssize_t show_bios_limit(struct cpufreq_policy *policy, char *buf)
 }
 #ifdef CONFIG_L2_VOLTAGE_TABLE
 extern ssize_t acpuclk_get_l2_levels_str(char *buf);
+extern void acpuclk_set_l2(unsigned khz, int vdd_dig, int vdd_mem);
 
 static ssize_t show_l2_levels(struct kobject *a, struct attribute *b, char *buf) {
 	return acpuclk_get_l2_levels_str(buf);
+}
+
+static ssize_t store_l2_levels(struct kobject *a, struct attribute *b, const char *buf, size_t count) {
+	int i = 0, j;
+	int set[3] = { 0, 0, 0};
+	int sign = 0;
+
+	if (count < 1) {
+		pr_err("Bailing on setting L2, count %d\n", count);
+		return 0;
+	}
+
+	if (buf[0] == '-') {
+		sign = -1;
+		i++;
+	}
+	else if (buf[0] == '+') {
+		sign = 1;
+		i++;
+	}
+
+	for (j = 0; i < count; i++) {
+	
+		char c = buf[i];
+		
+		if ((c >= '0') && (c <= '9')) {
+			set[j] *= 10;
+			set[j] += (c - '0');
+		}
+		else if ((c == ' ') || (c == '\t')) {
+			if (set[j] != 0) {
+				j++;
+
+				if ((sign != 0) || (j > 2))
+					break;
+			}
+		}
+		else
+			break;
+	}
+
+	if (sign != 0) {
+		if (set[0] > 0) {
+			acpuclk_set_l2(0, sign * set[0], sign * set[0]);
+			//pr_err("Would have set L2 to delta %d\n", sign * set[0]);
+		}
+	}
+	else {
+		if ((set[0] > 0) && (set[1] > 0) && (set[2] > 0)) {
+			acpuclk_set_l2((unsigned)set[0], set[1], set[1]);
+			//pr_err("Would have set L2(%u) to vdd_dig: %u vdd_mem: %u\n", (unsigned)set[0], set[1], set[2]);
+		}
+		else {
+			pr_err("Invalid L2 VDD setting\n");
+			return -EINVAL;
+		}
+	}
+	return count;
 }
 #endif //CONFIG_L2_VOLTAGE_TABLE
 
@@ -779,7 +838,7 @@ cpufreq_freq_attr_rw(scaling_governor);
 cpufreq_freq_attr_rw(scaling_setspeed);
 
 #ifdef CONFIG_L2_VOLTAGE_TABLE
-define_one_global_ro(l2_levels);
+define_one_global_rw(l2_levels);
 #endif
 #ifdef CONFIG_CPU_VOLTAGE_TABLE
 define_one_global_rw(vdd_levels);

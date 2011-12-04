@@ -57,6 +57,8 @@
 #define L_VAL_SCPLL_CAL_MIN	0x08 /* =  432 MHz with 27MHz source */
 #define L_VAL_SCPLL_CAL_MAX	0x23 /* = 1890 MHz with 27MHz source */
 
+#define MAX_VDD_L2			1400000 /* uV */
+#define MIN_VDD_L2		     900000 /* uV */
 #define MAX_VDD_SC			1600000 /* uV */
 #define MIN_VDD_SC		     700000 /* uV */
 #define MAX_AXI				 310500 /* KHz */
@@ -654,6 +656,36 @@ ssize_t acpuclk_get_l2_levels_str(char *buf) {
 		mutex_unlock(&drv_state.lock);
 	}
 	return len;
+}
+
+void acpuclk_set_l2(unsigned int khz, int vdd_uv_dig, int vdd_uv_mem) {
+
+	int i;
+	unsigned int new_vdd_uv_dig = 0;
+	unsigned int new_vdd_uv_mem = 0;
+
+	mutex_lock(&drv_state.lock);
+
+	for (i = 0; l2_freq_tbl_v2[i].khz; i++) {
+		if (khz == 0) {
+			new_vdd_uv_dig = min(max((l2_freq_tbl_v2[i].vdd_dig + vdd_uv_dig), (unsigned int)MIN_VDD_L2), (unsigned int)MAX_VDD_L2);
+			new_vdd_uv_mem = min(max((l2_freq_tbl_v2[i].vdd_mem + vdd_uv_mem), (unsigned int)MIN_VDD_L2), (unsigned int)MAX_VDD_L2);
+		}
+		else if (l2_freq_tbl_v2[i].khz == khz) {
+			new_vdd_uv_dig = min(max((unsigned int)vdd_uv_dig, (unsigned int)MIN_VDD_L2), (unsigned int)MAX_VDD_L2);
+			new_vdd_uv_mem = min(max((unsigned int)vdd_uv_mem, (unsigned int)MIN_VDD_L2), (unsigned int)MAX_VDD_L2);
+		}
+		else {
+			pr_err("Requested L2 out of range, khz %d %u %u\n", khz, new_vdd_uv_dig, new_vdd_uv_mem);
+			continue;
+		}
+
+		l2_freq_tbl_v2[i].vdd_dig = new_vdd_uv_dig;
+		l2_freq_tbl_v2[i].vdd_mem = new_vdd_uv_mem;
+		//pr_err("Would have set L2 khz %d to vdd_dig: %u vdd_mem: %u\n", l2_freq_tbl_v2[i].khz, new_vdd_uv_dig, new_vdd_uv_mem);
+	}
+
+	mutex_unlock(&drv_state.lock);
 }
 #endif //CONFIG_L2_VOLTAGE_TABLE
 
