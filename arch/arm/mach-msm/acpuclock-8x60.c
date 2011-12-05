@@ -57,6 +57,8 @@
 #define L_VAL_SCPLL_CAL_MIN	0x08 /* =  432 MHz with 27MHz source */
 #define L_VAL_SCPLL_CAL_MAX	0x23 /* = 1890 MHz with 27MHz source */
 
+#define SCPLL_STEP			  54000 /* KHz */
+#define VDD_STEP			  12500 /* uV */
 #define MIN_FRQ_L2			 432000 /* KHz */
 #define MAX_FRQ_L2			1836000 /* KHz */
 #define MAX_VDD_L2			1400000 /* uV */
@@ -659,6 +661,33 @@ ssize_t acpuclk_get_cpu_l2_levels_str(char *buf) {
 	}
 	return len;
 }
+
+void acpuclk_set_cpu_l2(unsigned int cpu_khz, int l2_khz) {
+
+	int i;
+	unsigned int new_l2_khz;
+
+	if (l2_khz % SCPLL_STEP != 0) {
+		pr_err("Requested Frequency not a valid step(multiple of %d): cpu_khz: %d l2_khz: %d\n", (unsigned int)SCPLL_STEP, cpu_khz, l2_khz);
+		return;
+	}
+		
+	mutex_lock(&drv_state.lock);
+	
+	for (i = 0; acpu_freq_tbl[i].acpuclk_khz; i++) {
+		if (cpu_khz == 0)
+			new_l2_khz = min(max((acpu_freq_tbl[i].l2_level->khz + l2_khz), (unsigned int)MIN_FRQ_L2), (unsigned int)MAX_FRQ_L2);
+		else if (acpu_freq_tbl[i].acpuclk_khz == cpu_khz)
+			new_l2_khz = min(max((unsigned int)l2_khz, (unsigned int)MIN_FRQ_L2), (unsigned int)MAX_FRQ_L2);
+		else 
+			continue;
+
+		acpu_freq_tbl[i].l2_level->khz = new_l2_khz;
+		//pr_err("Would have set CPU KHz %d to L2 KHz: %u\n", acpu_freq_tbl[i].acpuclk_khz, new_l2_khz);
+	}
+
+	mutex_unlock(&drv_state.lock);
+}
 #endif //CONFIG_CPU_L2_TABLE
 
 #ifdef CONFIG_L2_VOLTAGE_TABLE
@@ -684,8 +713,12 @@ void acpuclk_set_l2(unsigned int khz, int vdd_uv_dig, int vdd_uv_mem) {
 	unsigned int new_vdd_uv_dig = 0;
 	unsigned int new_vdd_uv_mem = 0;
 
+	if ((vdd_uv_dig % VDD_STEP != 0) || (vdd_uv_mem % VDD_STEP != 0)) {
+		pr_err("Requested VDD not a valid step(multiple of %d): vdd_uv_dig: %d vdd_uv_mem: %d\n", (unsigned int)VDD_STEP, vdd_uv_dig, vdd_uv_mem);
+		return;
+	}
+	
 	mutex_lock(&drv_state.lock);
-
 	for (i = 0; l2_freq_tbl[i].khz; i++) {
 		if (khz == 0) {
 			new_vdd_uv_dig = min(max((l2_freq_tbl[i].vdd_dig + vdd_uv_dig), (unsigned int)MIN_VDD_L2), (unsigned int)MAX_VDD_L2);
@@ -696,7 +729,6 @@ void acpuclk_set_l2(unsigned int khz, int vdd_uv_dig, int vdd_uv_mem) {
 			new_vdd_uv_mem = min(max((unsigned int)vdd_uv_mem, (unsigned int)MIN_VDD_L2), (unsigned int)MAX_VDD_L2);
 		}
 		else {
-			pr_err("Requested L2 out of range, khz %d %u %u\n", khz, new_vdd_uv_dig, new_vdd_uv_mem);
 			continue;
 		}
 
@@ -736,7 +768,10 @@ void acpuclk_set_vdd(unsigned int khz, int vdd_uv) {
 //	int vdd_uv;
 
 //	vdd_uv = vdd_mv * 1000;
-
+	if (vdd_uv % VDD_STEP != 0) {
+		pr_err("Requested VDD not a valid step(multiple of %d): vdd_uv: %d\n", (unsigned int)VDD_STEP, vdd_uv);
+		return;
+	}
 	mutex_lock(&drv_state.lock);
 
 	for (i = 0; acpu_freq_tbl[i].acpuclk_khz; i++) {
