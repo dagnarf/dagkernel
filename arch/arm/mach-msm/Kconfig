@@ -1083,11 +1083,15 @@ config MSM_DALRPC_TEST
 	  Exercises DAL RPC calls to QDSP6.
 
 config CPU_VOLTAGE_TABLE
-	bool "Enable CPU Voltage Table via sysfs for adjustements"
+	bool "Enable CPU Voltage Table adjustment via sysfs"
 	default n
 
 config L2_VOLTAGE_TABLE
-	bool "Enable L2 Voltage Table via sysfs for adjustements"
+	bool "Enable L2 Voltage Table adjustment via sysfs"
+	default n
+
+config CPU_L2_TABLE
+	bool "Enable CPU Frequency <--> L2 Frequency adjustment via sysfs"
 	default n
 
 if CPU_FREQ_MSM

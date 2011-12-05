@@ -57,6 +57,8 @@
 #define L_VAL_SCPLL_CAL_MIN	0x08 /* =  432 MHz with 27MHz source */
 #define L_VAL_SCPLL_CAL_MAX	0x23 /* = 1890 MHz with 27MHz source */
 
+#define MIN_FRQ_L2			 432000 /* KHz */
+#define MAX_FRQ_L2			1836000 /* KHz */
 #define MAX_VDD_L2			1400000 /* uV */
 #define MIN_VDD_L2		     900000 /* uV */
 #define MAX_VDD_SC			1600000 /* uV */
@@ -641,6 +643,24 @@ out:
 		mutex_unlock(&drv_state.lock);
 	return rc;
 }
+#ifdef CONFIG_CPU_L2_TABLE
+ssize_t acpuclk_get_cpu_l2_levels_str(char *buf) {
+
+	int i, len = 0;
+
+	if (buf) {
+		mutex_lock(&drv_state.lock);
+
+		for (i = 0; acpu_freq_tbl[i].acpuclk_khz; i++) {
+			len += sprintf(buf + len, "%8u: %8d\n", acpu_freq_tbl[i].acpuclk_khz, acpu_freq_tbl[i].l2_level->khz );
+		}
+
+		mutex_unlock(&drv_state.lock);
+	}
+	return len;
+}
+#endif //CONFIG_CPU_L2_TABLE
+
 #ifdef CONFIG_L2_VOLTAGE_TABLE
 ssize_t acpuclk_get_l2_levels_str(char *buf) {
 
@@ -671,7 +691,7 @@ void acpuclk_set_l2(unsigned int khz, int vdd_uv_dig, int vdd_uv_mem) {
 			new_vdd_uv_dig = min(max((l2_freq_tbl[i].vdd_dig + vdd_uv_dig), (unsigned int)MIN_VDD_L2), (unsigned int)MAX_VDD_L2);
 			new_vdd_uv_mem = min(max((l2_freq_tbl[i].vdd_mem + vdd_uv_mem), (unsigned int)MIN_VDD_L2), (unsigned int)MAX_VDD_L2);
 		}
-		else if (l2_freq_tbl_v2[i].khz == khz) {
+		else if (l2_freq_tbl[i].khz == khz) {
 			new_vdd_uv_dig = min(max((unsigned int)vdd_uv_dig, (unsigned int)MIN_VDD_L2), (unsigned int)MAX_VDD_L2);
 			new_vdd_uv_mem = min(max((unsigned int)vdd_uv_mem, (unsigned int)MIN_VDD_L2), (unsigned int)MAX_VDD_L2);
 		}

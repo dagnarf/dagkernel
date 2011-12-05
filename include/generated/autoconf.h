@@ -1,7 +1,7 @@
 /*
  * Automatically generated C config: don't edit
  * Linux kernel version: 2.6.35.11-dag0.4
- * Sun Dec  4 03:24:50 2011
+ * Sun Dec  4 15:54:09 2011
  */
 #define AUTOCONF_INCLUDED
 #define CONFIG_NF_CONNTRACK_H323 1
@@ -659,6 +659,7 @@
 #define CONFIG_HAVE_KERNEL_GZIP 1
 #define CONFIG_I2C_SSBI 1
 #define CONFIG_NETFILTER_XT_MATCH_MAC 1
+#define CONFIG_CPU_L2_TABLE 1
 #define CONFIG_GENERIC_ALLOCATOR 1
 #define CONFIG_MSM_WATCHDOG 1
 #define CONFIG_ANDROID_TIMED_OUTPUT 1
