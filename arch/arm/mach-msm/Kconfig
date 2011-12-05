@@ -1082,6 +1082,10 @@ config MSM_DALRPC_TEST
 	help
 	  Exercises DAL RPC calls to QDSP6.
 
+config SYS_VOLTAGE_TABLE
+	bool "Enable System Voltage Table adjustment via sysfs"
+	default n
+	
 config CPU_VOLTAGE_TABLE
 	bool "Enable CPU Voltage Table adjustment via sysfs"
 	default n

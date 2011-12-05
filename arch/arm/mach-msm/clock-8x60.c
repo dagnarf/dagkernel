@@ -2286,24 +2286,35 @@ struct clk_source soc_clk_sources[NUM_SRC] = {
 	CLK_SRC(PLL_8, voteable_pll_enable, PXO),
 };
 
+static int vdd_uv[] = {
+	[NONE]    =  500000,
+	[LOW]     = 1000000,
+	[NOMINAL] = 1100000,
+	[HIGH]    = 1200000,
+	[OVER]    = 1275000,
+	{0},
+};
+
 /* Update the sys_vdd voltage given a level. */
 int soc_update_sys_vdd(enum sys_vdd_level level)
 {
-	static const int vdd_uv[] = {
-		[NONE]    =  500000,
-		[LOW]     = 1000000,
-		[NOMINAL] = 1100000,
-		[HIGH]    = 1200000,
-#ifndef CONFIG_DAG
-		[OVER]    = 1275000,
-#else
-		[OVER]	  = 1225000,
-#endif
-	};
-
 	return rpm_vreg_set_voltage(RPM_VREG_ID_PM8058_S1,
 				    RPM_VREG_VOTER3, vdd_uv[level], 1);
 }
+
+#ifdef CONFIG_SYS_VOLTAGE_TABLE
+ssize_t clock8x60_get_sys_vdd_levels_str(char *buf) {
+
+	int i, len = 0;
+
+	if (buf) {
+		for (i = 0; vdd_uv[i]; i++) {
+			len += sprintf(buf + len, "%8u: %8d\n", i, vdd_uv[i] );
+		}
+	}
+	return len;
+}
+#endif //CONFIG_SYS_VOLTAGE_TABLE
 
 /* Enable/disable a power rail associated with a clock. */
 int soc_set_pwr_rail(unsigned id, int enable)

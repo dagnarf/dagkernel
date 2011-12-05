@@ -1,7 +1,7 @@
 /*
  * Automatically generated C config: don't edit
  * Linux kernel version: 2.6.35.11-dag0.4
- * Sun Dec  4 15:54:09 2011
+ * Sun Dec  4 18:37:24 2011
  */
 #define AUTOCONF_INCLUDED
 #define CONFIG_NF_CONNTRACK_H323 1
@@ -39,6 +39,7 @@
 #define CONFIG_MODULE_FORCE_UNLOAD 1
 #define CONFIG_CPU_FREQ_GOV_ONDEMAND 1
 #define CONFIG_MSM_SDIO_CMUX 1
+#define CONFIG_SYS_VOLTAGE_TABLE 1
 #define CONFIG_NET_ETHERNET 1
 #define CONFIG_EXPERIMENTAL 1
 #define CONFIG_PPP_SYNC_TTY 1
