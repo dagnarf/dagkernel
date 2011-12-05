@@ -683,7 +683,8 @@ void acpuclk_set_cpu_l2(unsigned int cpu_khz, int l2_khz) {
 			continue;
 
 		acpu_freq_tbl[i].l2_level->khz = new_l2_khz;
-		//pr_err("Would have set CPU KHz %d to L2 KHz: %u\n", acpu_freq_tbl[i].acpuclk_khz, new_l2_khz);
+		acpu_freq_tbl[i].l2_level->l_val = (new_l2_khz/SCPLL_STEP);
+		//pr_err("Would have set CPU KHz %d to L2 KHz: %u l_val: %x\n", acpu_freq_tbl[i].acpuclk_khz, new_l2_khz, (new_l2_khz/SCPLL_STEP));
 	}
 
 	mutex_unlock(&drv_state.lock);
