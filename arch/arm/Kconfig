@@ -214,14 +214,6 @@ source "init/Kconfig"
 source "kernel/Kconfig.freezer"
 
 menu "System Type"
-	
-config DAG
-	bool "Build the kernel with Da_Gs settings"
-	default n
-	help
-	  Build a kernel with Da_G's settings - Works for me,
-	  but not for the majority of users...
-	
 
 config MMU
 	bool "MMU-based Paged Memory Management Support"
