@@ -218,10 +218,9 @@ static struct clkctl_l2_speed l2_freq_tbl_v2[] = {
 	[18] = {1620000,  1, 0x1E, 1250000, 1275000, 4},
 	[19] = {1674000,  1, 0x1F, 1275000, 1300000, 4},
 	[20] = {1728000,  1, 0x20, 1300000, 1312500, 5},
-	[21] = {1755000,  1, 0x20, 1312500, 1325000, 5},
-	[22] = {1782000,  1, 0x21, 1312500, 1325000, 5},
-	[23] = {1836000,  1, 0x22, 1312500, 1325000, 5},
-	[24] = {0},
+	[21] = {1782000,  1, 0x21, 1312500, 1325000, 5},
+	[22] = {1836000,  1, 0x22, 1312500, 1325000, 5},
+	[23] = {0},
 };
 #define L2(x) (&l2_freq_tbl_v2[(x)])
 
@@ -235,12 +234,9 @@ static struct clkctl_acpu_speed acpu_freq_tbl_fast[] = {
   { {1, 1}, 1134000,  ACPU_SCPLL, 0, 0, 1, 0x15, L2(14), 1075000, 0x03006000},
   { {1, 1}, 1350000,  ACPU_SCPLL, 0, 0, 1, 0x19, L2(16), 1150000, 0x03006000},
   { {1, 1}, 1566000,  ACPU_SCPLL, 0, 0, 1, 0x1D, L2(17), 1250000, 0x03006000},
-  { {1, 1}, 1728000,  ACPU_SCPLL, 0, 0, 1, 0x20, L2(20), 1250000, 0x03006000},
-  { {1, 1}, 1755000,  ACPU_SCPLL, 0, 1, 1, 0x21, L2(21), 1262500, 0x03006000},
-  { {1, 1}, 1782000,  ACPU_SCPLL, 0, 0, 1, 0x21, L2(21), 1275000, 0x03006000},
-  { {1, 1}, 1809000,  ACPU_SCPLL, 0, 1, 1, 0x22, L2(21), 1275000, 0x03006000},
-  { {1, 1}, 1836000,  ACPU_SCPLL, 0, 0, 1, 0x22, L2(21), 1300000, 0x03006000},
-  { {1, 1}, 1863000,  ACPU_SCPLL, 0, 1, 1, 0x23, L2(21), 1325000, 0x03006000},
+  { {1, 1}, 1728000,  ACPU_SCPLL, 0, 0, 1, 0x20, L2(20), 1275000, 0x03006000},
+  { {1, 1}, 1782000,  ACPU_SCPLL, 0, 0, 1, 0x21, L2(20), 1300000, 0x03006000},
+  { {1, 1}, 1836000,  ACPU_SCPLL, 0, 0, 1, 0x22, L2(20), 1300000, 0x03006000},
 
   { {0, 0}, 0 },
 };
@@ -998,9 +994,13 @@ void __init msm_acpu_clock_init(struct msm_acpu_clock_platform_data *clkdata)
 	bus_init();
 
 	/* Improve boot time by ramping up CPUs immediately. */
+#ifdef MSM_CPU_FREQ_SET_MIN_MAX
+	for_each_online_cpu(cpu)
+		acpuclk_set_rate(cpu, MSM_CPU_FREQ_MAX, SETRATE_INIT);
+#else
 	for_each_online_cpu(cpu)
 		acpuclk_set_rate(cpu, MAX_BOOT_KHZ, SETRATE_INIT);
-
+#endif //MSM_CPU_FREQ_SET_MIN_MAX
 	cpufreq_table_init();
 	register_hotcpu_notifier(&acpuclock_cpu_notifier);
 }

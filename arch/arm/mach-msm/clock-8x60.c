@@ -2290,7 +2290,7 @@ static int sys_vdd_uv[] = {
 	[LOW]     = 1000000,
 	[NOMINAL] = 1100000,
 	[HIGH]    = 1200000,
-	[OVER]    = 1275000,
+	[OVER]    = 1300000,
 	[NUM_SYS_VDD_LEVELS] = 0,
 };
 

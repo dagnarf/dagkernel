@@ -1,7 +1,7 @@
 /*
  * Automatically generated C config: don't edit
  * Linux kernel version: 2.6.35.11-dag0.4
- * Sun Dec  4 18:37:24 2011
+ * Wed Dec  7 14:14:16 2011
  */
 #define AUTOCONF_INCLUDED
 #define CONFIG_NF_CONNTRACK_H323 1
