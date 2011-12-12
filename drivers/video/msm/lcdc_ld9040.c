@@ -1932,7 +1932,8 @@ static int __init lcdc_ld9040_panel_init(void)
 	pinfo->pdest = DISPLAY_1;
 	pinfo->wait_cycle = 0;
 	pinfo->bpp = 24;
-	pinfo->fb_num = 2;
+	pinfo->fb_num = 3;
+	pinfo->lcd.hw_vsync_mode = FALSE;
 #if defined (CONFIG_KOR_MODEL_SHV_E110S)
 	if (get_hw_rev() < 0x05 ) 
 #elif defined (CONFIG_USA_MODEL_SGH_T989)
