@@ -33,8 +33,9 @@
 #include <linux/platform_device.h>
 #include <mach/sdio_smem.h>
 #include <linux/wakelock.h>
+#include <linux/uaccess.h>
 
-#include "sdio_al_private.h"
+#include <sdio_al_private.h>
 #include <linux/debugfs.h>
 
 #include <linux/kthread.h>
@@ -62,7 +63,9 @@ enum lpm_test_msg_type {
 #define MAX_XFER_SIZE (16*1024)
 #define SMEM_MAX_XFER_SIZE 0xBC000
 #define A2_MIN_PACKET_SIZE 5
+#define RMNT_PACKET_SIZE (4*1024)
 #define DUN_PACKET_SIZE (2*1024)
+#define CSVT_PACKET_SIZE 1700
 
 #define TEST_DBG(x...) if (test_ctx->runtime_debug) pr_info(x)
 
@@ -72,8 +75,18 @@ enum lpm_test_msg_type {
 #define SDIO_LPM_TEST "sdio_lpm_test_reading_task"
 #define LPM_TEST_CONFIG_SIGNATURE 0xDEADBABE
 #define LPM_MSG_NAME_SIZE 20
+#define MAX_STR_SIZE	10
+#define MAX_AVG_RTT_TIME_USEC	2500
+#define SDIO_RMNT_RTT_PACKET_SIZE	32
+#define SDIO_CSVT_RTT_PACKET_SIZE	1900
 
 #define A2_HEADER_OVERHEAD 8
+
+enum rx_process_state {
+	RX_PROCESS_PACKET_INIT,
+	RX_PROCESS_A2_HEADER,
+	RX_PROCESS_PACKET_DATA,
+};
 
 enum sdio_test_case_type {
 	SDIO_TEST_LOOPBACK_HOST,
@@ -83,6 +96,7 @@ enum sdio_test_case_type {
 	SDIO_TEST_LPM_RANDOM,
 	SDIO_TEST_HOST_SENDER_NO_LP,
 	SDIO_TEST_CLOSE_CHANNEL,
+	SDIO_TEST_A2_VALIDATION,
 	/* The following tests are not part of the 9k tests and should be
 	 * kept last in case new tests are added
 	 */
@@ -137,6 +151,8 @@ enum sdio_channels_ids {
 	SDIO_DIAG,
 	SDIO_DUN,
 	SDIO_SMEM,
+	SDIO_CIQ,
+	SDIO_CSVT,
 	SDIO_MAX_CHANNELS
 };
 
@@ -226,6 +242,35 @@ struct sdio_al_test_debug {
 	struct dentry *debug_test_result;
 	struct dentry *debug_dun_throughput;
 	struct dentry *debug_rmnt_throughput;
+	struct dentry *rpc_sender_test;
+	struct dentry *rpc_qmi_diag_sender_test;
+	struct dentry *smem_test;
+	struct dentry *smem_rpc_test;
+	struct dentry *rmnet_a2_validation_test;
+	struct dentry *dun_a2_validation_test;
+	struct dentry *rmnet_a2_perf_test;
+	struct dentry *dun_a2_perf_test;
+	struct dentry *csvt_a2_perf_test;
+	struct dentry *rmnet_dun_a2_perf_test;
+	struct dentry *rpc_sender_rmnet_a2_perf_test;
+	struct dentry *all_channels_test;
+	struct dentry *host_sender_no_lp_diag_test;
+	struct dentry *host_sender_no_lp_diag_rpc_ciq_test;
+	struct dentry *rmnet_small_packets_test;
+	struct dentry *rmnet_rtt_test;
+	struct dentry *csvt_rtt_test;
+	struct dentry *modem_reset_rpc_test;
+	struct dentry *modem_reset_rmnet_test;
+	struct dentry *modem_reset_channels_4bit_dev_test;
+	struct dentry *modem_reset_channels_8bit_dev_test;
+	struct dentry *modem_reset_all_channels_test;
+	struct dentry *open_close_test;
+	struct dentry *open_close_dun_rmnet_test;
+	struct dentry *close_chan_lpm_test;
+	struct dentry *lpm_test_client_wakes_host_test;
+	struct dentry *lpm_test_host_wakes_client_test;
+	struct dentry *lpm_test_random_single_channel_test;
+	struct dentry *lpm_test_random_multi_channel_test;
 };
 
 struct test_context {
@@ -251,10 +296,14 @@ struct test_context {
 
 	int runtime_debug;
 
-	struct platform_device smem_pdev;
+	struct platform_device *smem_pdev;
 	struct sdio_smem_client *sdio_smem;
 	int smem_was_init;
 	u8 *smem_buf;
+	uint32_t smem_counter;
+
+	struct platform_device *ciq_app_pdev;
+	struct platform_device *csvt_app_pdev;
 
 	wait_queue_head_t   wait_q;
 	int test_completed;
@@ -266,6 +315,29 @@ struct test_context {
 	unsigned int lpm_pseudo_random_seed;
 };
 
+/* FORWARD DECLARATIONS */
+static int set_params_loopback_9k(struct test_channel *tch);
+static int set_params_smem_test(struct test_channel *tch);
+static int set_params_a2_validation(struct test_channel *tch);
+static int set_params_a2_perf(struct test_channel *tch);
+static int set_params_8k_sender_no_lp(struct test_channel *tch);
+static int set_params_a2_small_pkts(struct test_channel *tch);
+static int set_params_rtt(struct test_channel *tch);
+static int set_params_loopback_9k_close(struct test_channel *tch);
+static int close_channel_lpm_test(int channel_num);
+static int set_params_lpm_test(struct test_channel *tch,
+				enum sdio_test_case_type test,
+				int timer_interval_ms);
+static void set_pseudo_random_seed(void);
+static int set_params_modem_reset(struct test_channel *tch);
+static int test_start(void);
+static void rx_cleanup(struct test_channel *test_ch, int *rx_packet_count);
+static void sdio_al_test_cleanup_channels(void);
+static void notify(void *priv, unsigned channel_event);
+#ifdef CONFIG_MSM_SDIO_SMEM
+static int sdio_smem_open(struct sdio_smem_client *sdio_smem);
+#endif
+
 /*
  * Seed for pseudo random time sleeping in Random LPM test.
  * If not set, current time in jiffies is used.
@@ -274,19 +346,2094 @@ static unsigned int seed;
 module_param(seed, int, 0);
 static struct test_context *test_ctx;
 
+static void sdio_al_test_initial_dev_and_chan(struct test_context *test_ctx)
+{
+	int i = 0;
+
+	if (!test_ctx) {
+		pr_err(TEST_MODULE_NAME ":%s - test_ctx is NULL.\n", __func__);
+		return;
+	}
+
+	for (i = 0 ; i < MAX_NUM_OF_SDIO_DEVICES ; ++i)
+		test_ctx->test_dev_arr[i].sdio_al_device = NULL;
+
+	for (i = 0; i < SDIO_MAX_CHANNELS; i++) {
+		struct test_channel *tch = test_ctx->test_ch_arr[i];
+		if (!tch)
+			continue;
+		tch->is_used = 0;
+	}
+
+	sdio_al_test_cleanup_channels();
+}
+
 #ifdef CONFIG_DEBUG_FS
-/*
-*
-* Trigger on/off for debug messages
-* for trigger off the data messages debug level use:
-* echo 0 > /sys/kernel/debugfs/sdio_al/debug_data_on
-* for trigger on the data messages debug level use:
-* echo 1 > /sys/kernel/debugfs/sdio_al/debug_data_on
-* for trigger off the lpm messages debug level use:
-* echo 0 > /sys/kernel/debugfs/sdio_al/debug_lpm_on
-* for trigger on the lpm messages debug level use:
-* echo 1 > /sys/kernel/debugfs/sdio_al/debug_lpm_on
-*/
+
+static int message_repeat;
+
+static int sdio_al_test_extract_number(const char __user *buf,
+					size_t count)
+{
+	int ret = 0;
+	int number = -1;
+	char local_buf[MAX_STR_SIZE] = {0};
+	char *start = NULL;
+
+	if (count > MAX_STR_SIZE) {
+		pr_err(TEST_MODULE_NAME ": %s - MAX_STR_SIZE(%d) < count(%d). "
+		       "Please choose smaller number\n",
+		       __func__, MAX_STR_SIZE, (int)count);
+		return -EINVAL;
+	}
+
+	if (copy_from_user(local_buf, buf, count)) {
+		pr_err(TEST_MODULE_NAME ": %s - copy_from_user() failed\n",
+		       __func__);
+		return -EINVAL;
+	}
+
+	/* adding null termination to the string */
+	local_buf[count] = '\0';
+
+	/* stripping leading and trailing white spaces */
+	start = strstrip(local_buf);
+
+	ret = strict_strtol(start, 10, (long *)&number);
+
+	if (ret) {
+		pr_err(TEST_MODULE_NAME " : %s - strict_strtol() failed\n",
+		       __func__);
+		return ret;
+	}
+
+	return number;
+}
+
+static int sdio_al_test_open(struct inode *inode, struct file *file)
+{
+	file->private_data = inode->i_private;
+	message_repeat = 1;
+	return 0;
+}
+
+static void sdio_al_test_cleanup_channels(void)
+{
+	int channel_num;
+	int dummy = 0;
+
+	for (channel_num = 0 ; channel_num < SDIO_MAX_CHANNELS ;
+	      ++channel_num) {
+		if (channel_num == SDIO_SMEM)
+			continue;
+
+		 rx_cleanup(test_ctx->test_ch_arr[channel_num], &dummy);
+	}
+
+	return;
+}
+
+/* RPC SENDER TEST */
+static ssize_t rpc_sender_test_write(struct file *file,
+				      const char __user *buf,
+				      size_t count,
+				      loff_t *ppos)
+{
+	int ret = 0;
+	int i = 0;
+	int number = -1;
+
+	pr_info(TEST_MODULE_NAME "-- RPC SENDER TEST --\n");
+
+	number = sdio_al_test_extract_number(buf, count);
+
+	if (number < 0) {
+		pr_err(TEST_MODULE_NAME " : %s - sdio_al_test_extract_number() "
+		       "failed. number = %d\n", __func__, number);
+		return count;
+	}
+
+	for (i = 0 ; i < number ; ++i) {
+		pr_info(TEST_MODULE_NAME " - Cycle # %d / %d\n", i+1, number);
+		pr_info(TEST_MODULE_NAME " ===================");
+
+		sdio_al_test_initial_dev_and_chan(test_ctx);
+
+		set_params_loopback_9k(test_ctx->test_ch_arr[SDIO_RPC]);
+
+		ret = test_start();
+
+		if (ret)
+			break;
+	}
+
+	return count;
+}
+
+static ssize_t rpc_sender_test_read(struct file *file,
+				     char __user *buffer,
+				     size_t count,
+				     loff_t *offset)
+{
+	memset((void *)buffer, 0, count);
+
+	snprintf(buffer, count,
+		 "\nRPC_SENDER_TEST\n"
+		 "===============\n"
+		 "Description:\n"
+		 "TBD\n");
+
+	if (message_repeat == 1) {
+		message_repeat = 0;
+		return strnlen(buffer, count);
+	} else {
+		return 0;
+	}
+}
+
+const struct file_operations rpc_sender_test_ops = {
+	.open = sdio_al_test_open,
+	.write = rpc_sender_test_write,
+	.read = rpc_sender_test_read,
+};
+
+/* RPC, QMI & DIAG SENDER TEST */
+static ssize_t rpc_qmi_diag_sender_test_write(struct file *file,
+					       const char __user *buf,
+					       size_t count,
+					       loff_t *ppos)
+{
+	int ret = 0;
+	int i = 0;
+	int number = -1;
+
+	pr_info(TEST_MODULE_NAME "-- RPC, QMI AND DIAG SENDER TEST --\n");
+
+	number = sdio_al_test_extract_number(buf, count);
+
+	if (number < 0) {
+		pr_err(TEST_MODULE_NAME " : %s - sdio_al_test_extract_number() "
+		       "failed. number = %d\n", __func__, number);
+		return count;
+	}
+
+	for (i = 0 ; i < number ; ++i) {
+		pr_info(TEST_MODULE_NAME " - Cycle # %d / %d\n", i+1, number);
+		pr_info(TEST_MODULE_NAME " ===================");
+
+		sdio_al_test_initial_dev_and_chan(test_ctx);
+
+		set_params_loopback_9k(test_ctx->test_ch_arr[SDIO_RPC]);
+		set_params_loopback_9k(test_ctx->test_ch_arr[SDIO_QMI]);
+		set_params_loopback_9k(test_ctx->test_ch_arr[SDIO_DIAG]);
+
+		ret = test_start();
+
+		if (ret)
+			break;
+	}
+
+	return count;
+}
+
+static ssize_t rpc_qmi_diag_sender_test_read(struct file *file,
+					      char __user
+					      *buffer, size_t count,
+					      loff_t *offset)
+{
+	memset((void *)buffer, 0, count);
+
+	snprintf(buffer, count,
+		 "\nRPC_QMI_DIAG_SENDER_TEST\n"
+		 "========================\n"
+		 "Description:\n"
+		 "TBD\n");
+
+
+	if (message_repeat == 1) {
+		message_repeat = 0;
+		return strnlen(buffer, count);
+	} else {
+		return 0;
+	}
+}
+
+const struct file_operations rpc_qmi_diag_sender_test_ops = {
+	.open = sdio_al_test_open,
+	.write = rpc_qmi_diag_sender_test_write,
+	.read = rpc_qmi_diag_sender_test_read,
+};
+
+/* SMEM TEST */
+static ssize_t smem_test_write(struct file *file,
+				const char __user *buf,
+				size_t count,
+				loff_t *ppos)
+{
+	int ret = 0;
+	int i = 0;
+	int number = -1;
+
+	pr_info(TEST_MODULE_NAME "-- SMEM TEST --\n");
+
+	number = sdio_al_test_extract_number(buf, count);
+
+	if (number < 0) {
+		pr_err(TEST_MODULE_NAME " : %s - sdio_al_test_extract_number() "
+		       "failed. number = %d\n", __func__, number);
+		return count;
+	}
+
+	for (i = 0 ; i < number ; ++i) {
+		pr_info(TEST_MODULE_NAME " - Cycle # %d / %d\n", i+1, number);
+		pr_info(TEST_MODULE_NAME " ===================");
+
+		sdio_al_test_initial_dev_and_chan(test_ctx);
+
+		set_params_smem_test(test_ctx->test_ch_arr[SDIO_SMEM]);
+
+		ret = test_start();
+
+		if (ret)
+			break;
+	}
+
+	return count;
+}
+
+static ssize_t smem_test_read(struct file *file,
+			       char __user *buffer,
+			       size_t count,
+			       loff_t *offset)
+{
+	memset((void *)buffer, 0, count);
+
+	snprintf(buffer, count,
+		 "\nSMEM_TEST\n"
+		 "=========\n"
+		 "Description:\n"
+		 "TBD\n");
+
+	if (message_repeat == 1) {
+		message_repeat = 0;
+		return strnlen(buffer, count);
+	} else {
+		return 0;
+	}
+}
+
+const struct file_operations smem_test_ops = {
+	.open = sdio_al_test_open,
+	.write = smem_test_write,
+	.read = smem_test_read,
+};
+
+/* SMEM & RPC TEST */
+static ssize_t smem_rpc_test_write(struct file *file,
+				    const char __user *buf,
+				    size_t count,
+				    loff_t *ppos)
+{
+	int ret = 0;
+	int i = 0;
+	int number = -1;
+
+	pr_info(TEST_MODULE_NAME "-- SMEM AND RPC TEST --\n");
+
+	number = sdio_al_test_extract_number(buf, count);
+
+	if (number < 0) {
+		pr_err(TEST_MODULE_NAME " : %s - sdio_al_test_extract_number() "
+		       "failed. number = %d\n", __func__, number);
+		return count;
+	}
+
+	for (i = 0 ; i < number ; ++i) {
+		pr_info(TEST_MODULE_NAME " - Cycle # %d / %d\n", i+1, number);
+		pr_info(TEST_MODULE_NAME " ===================");
+
+		sdio_al_test_initial_dev_and_chan(test_ctx);
+
+		set_params_loopback_9k(test_ctx->test_ch_arr[SDIO_RPC]);
+		set_params_smem_test(test_ctx->test_ch_arr[SDIO_SMEM]);
+
+		ret = test_start();
+
+		if (ret)
+			break;
+	}
+
+	return count;
+}
+
+static ssize_t smem_rpc_test_read(struct file *file,
+				   char __user *buffer,
+				   size_t count,
+				   loff_t *offset)
+{
+	memset((void *)buffer, 0, count);
+
+	snprintf(buffer, count,
+		 "\nSMEM_RPC_TEST\n"
+		 "=============\n"
+		 "Description:\n"
+		 "TBD\n");
+
+	if (message_repeat == 1) {
+		message_repeat = 0;
+		return strnlen(buffer, count);
+	} else {
+		return 0;
+	}
+}
+
+const struct file_operations smem_rpc_test_ops = {
+	.open = sdio_al_test_open,
+	.write = smem_rpc_test_write,
+	.read = smem_rpc_test_read,
+};
+
+/* RMNET A2 VALIDATION TEST */
+static ssize_t rmnet_a2_validation_test_write(struct file *file,
+						const char __user *buf,
+						size_t count,
+						loff_t *ppos)
+{
+	int ret = 0;
+	int i = 0;
+	int number = -1;
+
+	pr_info(TEST_MODULE_NAME "-- RMNET A2 VALIDATION TEST --\n");
+
+	number = sdio_al_test_extract_number(buf, count);
+
+	if (number < 0) {
+		pr_err(TEST_MODULE_NAME " : %s - sdio_al_test_extract_number() "
+		       "failed. number = %d\n", __func__, number);
+		return count;
+	}
+
+	for (i = 0 ; i < number ; ++i) {
+		pr_info(TEST_MODULE_NAME " - Cycle # %d / %d\n", i+1, number);
+		pr_info(TEST_MODULE_NAME " ===================");
+
+		sdio_al_test_initial_dev_and_chan(test_ctx);
+
+		set_params_a2_validation(test_ctx->test_ch_arr[SDIO_RMNT]);
+
+		ret = test_start();
+
+		if (ret)
+			break;
+	}
+
+	return count;
+}
+
+static ssize_t rmnet_a2_validation_test_read(struct file *file,
+						char __user *buffer,
+						size_t count,
+						loff_t *offset)
+{
+	memset((void *)buffer, 0, count);
+
+	snprintf(buffer, count,
+		 "\nRMNET_A2_VALIDATION_TEST\n"
+		 "=========================\n"
+		 "Description:\n"
+		 "In this test, the HOST sends multiple packets to the\n"
+		 "CLIENT and validates the packets loop backed from A2\n"
+		 "for the RMNET channel.\n\n"
+		 "END OF DESCRIPTION\n");
+
+	if (message_repeat == 1) {
+		message_repeat = 0;
+		return strnlen(buffer, count);
+	} else {
+		return 0;
+	}
+}
+
+const struct file_operations rmnet_a2_validation_test_ops = {
+	.open = sdio_al_test_open,
+	.write = rmnet_a2_validation_test_write,
+	.read = rmnet_a2_validation_test_read,
+};
+
+/* DUN A2 VALIDATION TEST */
+static ssize_t dun_a2_validation_test_write(struct file *file,
+						const char __user *buf,
+						size_t count,
+						loff_t *ppos)
+{
+	int ret = 0;
+	int i = 0;
+	int number = -1;
+
+	pr_info(TEST_MODULE_NAME "-- DUN A2 VALIDATION TEST --\n");
+
+	number = sdio_al_test_extract_number(buf, count);
+
+	if (number < 0) {
+		pr_err(TEST_MODULE_NAME " : %s - sdio_al_test_extract_number() "
+		       "failed. number = %d\n", __func__, number);
+		return count;
+	}
+
+	for (i = 0 ; i < number ; ++i) {
+		pr_info(TEST_MODULE_NAME " - Cycle # %d / %d\n", i+1, number);
+		pr_info(TEST_MODULE_NAME " ===================");
+
+		sdio_al_test_initial_dev_and_chan(test_ctx);
+
+		set_params_a2_validation(test_ctx->test_ch_arr[SDIO_DUN]);
+
+		ret = test_start();
+
+		if (ret)
+			break;
+	}
+
+	return count;
+}
+
+static ssize_t dun_a2_validation_test_read(struct file *file,
+						char __user *buffer,
+						size_t count,
+						loff_t *offset)
+{
+	memset((void *)buffer, 0, count);
+
+	snprintf(buffer, count,
+		"\nDUN_A2_VALIDATION_TEST\n"
+		"=========================\n"
+		"Description:\n"
+		"In this test, the HOST sends multiple packets to the\n"
+		"CLIENT and validates the packets loop backed from A2\n"
+		"for the DUN channel.\n\n"
+		"END OF DESCRIPTION\n");
+
+	if (message_repeat == 1) {
+		message_repeat = 0;
+		return strnlen(buffer, count);
+	} else {
+		return 0;
+	}
+}
+
+const struct file_operations dun_a2_validation_test_ops = {
+	.open = sdio_al_test_open,
+	.write = dun_a2_validation_test_write,
+	.read = dun_a2_validation_test_read,
+};
+
+/* RMNET A2 PERFORMANCE TEST */
+static ssize_t rmnet_a2_perf_test_write(struct file *file,
+					 const char __user *buf,
+					 size_t count,
+					 loff_t *ppos)
+{
+	int ret = 0;
+	int i = 0;
+	int number = -1;
+
+	pr_info(TEST_MODULE_NAME "-- RMNET A2 PERFORMANCE TEST --\n");
+
+	number = sdio_al_test_extract_number(buf, count);
+
+	if (number < 0) {
+		pr_err(TEST_MODULE_NAME " : %s - sdio_al_test_extract_number() "
+		       "failed. number = %d\n", __func__, number);
+		return count;
+	}
+
+	for (i = 0 ; i < number ; ++i) {
+		pr_info(TEST_MODULE_NAME " - Cycle # %d / %d\n", i+1, number);
+		pr_info(TEST_MODULE_NAME " ===================");
+
+		sdio_al_test_initial_dev_and_chan(test_ctx);
+
+		set_params_a2_perf(test_ctx->test_ch_arr[SDIO_RMNT]);
+
+		ret = test_start();
+
+		if (ret)
+			break;
+	}
+
+	return count;
+}
+
+static ssize_t rmnet_a2_perf_test_read(struct file *file,
+					char __user *buffer,
+					size_t count,
+					loff_t *offset)
+{
+	memset((void *)buffer, 0, count);
+
+	snprintf(buffer, count,
+		 "\nRMNET_A2_PERFORMANCE_TEST\n"
+		 "=========================\n"
+		 "Description:\n"
+		 "TBD\n");
+
+	if (message_repeat == 1) {
+		message_repeat = 0;
+		return strnlen(buffer, count);
+	} else {
+		return 0;
+	}
+}
+
+const struct file_operations rmnet_a2_perf_test_ops = {
+	.open = sdio_al_test_open,
+	.write = rmnet_a2_perf_test_write,
+	.read = rmnet_a2_perf_test_read,
+};
+
+/* DUN A2 PERFORMANCE TEST */
+static ssize_t dun_a2_perf_test_write(struct file *file,
+				       const char __user *buf,
+				       size_t count,
+				       loff_t *ppos)
+{
+	int ret = 0;
+	int i = 0;
+	int number = -1;
+
+	pr_info(TEST_MODULE_NAME "-- DUN A2 PERFORMANCE TEST --\n");
+
+	number = sdio_al_test_extract_number(buf, count);
+
+	if (number < 0) {
+		pr_err(TEST_MODULE_NAME " : %s - sdio_al_test_extract_number() "
+		       "failed. number = %d\n", __func__, number);
+		return count;
+	}
+
+	for (i = 0 ; i < number ; ++i) {
+		pr_info(TEST_MODULE_NAME " - Cycle # %d / %d\n", i+1, number);
+		pr_info(TEST_MODULE_NAME " ===================");
+
+		sdio_al_test_initial_dev_and_chan(test_ctx);
+
+		set_params_a2_perf(test_ctx->test_ch_arr[SDIO_DUN]);
+
+		ret = test_start();
+
+		if (ret)
+			break;
+	}
+
+	return count;
+}
+
+static ssize_t dun_a2_perf_test_read(struct file *file,
+				      char __user *buffer,
+				      size_t count,
+				      loff_t *offset)
+{
+	memset((void *)buffer, 0, count);
+
+	snprintf(buffer, count,
+		 "\nDUN_A2_PERFORMANCE_TEST\n"
+		 "=======================\n"
+		 "Description:\n"
+		 "TBD\n");
+
+	if (message_repeat == 1) {
+		message_repeat = 0;
+		return strnlen(buffer, count);
+	} else {
+		return 0;
+	}
+}
+
+const struct file_operations dun_a2_perf_test_ops = {
+	.open = sdio_al_test_open,
+	.write = dun_a2_perf_test_write,
+	.read = dun_a2_perf_test_read,
+};
+
+/* CSVT A2 PERFORMANCE TEST */
+static ssize_t csvt_a2_perf_test_write(struct file *file,
+					const char __user *buf,
+					size_t count,
+					loff_t *ppos)
+{
+	int ret = 0;
+	int i = 0;
+	int number = -1;
+
+	pr_info(TEST_MODULE_NAME "-- CSVT A2 PERFORMANCE TEST --\n");
+
+	number = sdio_al_test_extract_number(buf, count);
+
+	if (number < 0) {
+		pr_err(TEST_MODULE_NAME " : %s - sdio_al_test_extract_number() "
+		       "failed. number = %d\n", __func__, number);
+		return count;
+	}
+
+	for (i = 0 ; i < number ; ++i) {
+		pr_info(TEST_MODULE_NAME " - Cycle # %d / %d\n", i+1, number);
+		pr_info(TEST_MODULE_NAME " ===================");
+
+		sdio_al_test_initial_dev_and_chan(test_ctx);
+
+		set_params_a2_perf(test_ctx->test_ch_arr[SDIO_CSVT]);
+
+		ret = test_start();
+
+		if (ret)
+			break;
+	}
+
+	return count;
+}
+
+static ssize_t csvt_a2_perf_test_read(struct file *file,
+				       char __user *buffer,
+				       size_t count,
+				       loff_t *offset)
+{
+	memset((void *)buffer, 0, count);
+
+	snprintf(buffer, count,
+		 "\nCSVT_A2_PERFORMANCE_TEST\n"
+		 "========================\n"
+		 "Description:\n"
+		 "Loopback test on the CSVT Channel, in order to check "
+		 "throughput performance.\n"
+		 "Packet size that are sent on the CSVT channel in this "
+		 "test is %d.bytes\n\n"
+		 "END OF DESCRIPTION\n", CSVT_PACKET_SIZE);
+
+	if (message_repeat == 1) {
+		message_repeat = 0;
+		return strnlen(buffer, count);
+	} else {
+		return 0;
+	}
+}
+
+const struct file_operations csvt_a2_perf_test_ops = {
+	.open = sdio_al_test_open,
+	.write = csvt_a2_perf_test_write,
+	.read = csvt_a2_perf_test_read,
+};
+
+/* RMNET DUN A2 PERFORMANCE TEST */
+static ssize_t rmnet_dun_a2_perf_test_write(struct file *file,
+					     const char __user *buf,
+					     size_t count,
+					     loff_t *ppos)
+{
+	int ret = 0;
+	int i = 0;
+	int number = -1;
+
+	pr_info(TEST_MODULE_NAME "-- RMNET AND DUN A2 PERFORMANCE TEST --\n");
+
+	number = sdio_al_test_extract_number(buf, count);
+
+	if (number < 0) {
+		pr_err(TEST_MODULE_NAME " : %s - sdio_al_test_extract_number() "
+		       "failed. number = %d\n", __func__, number);
+		return count;
+	}
+
+	for (i = 0 ; i < number ; ++i) {
+		pr_info(TEST_MODULE_NAME " - Cycle # %d / %d\n", i+1, number);
+		pr_info(TEST_MODULE_NAME " ===================");
+
+		sdio_al_test_initial_dev_and_chan(test_ctx);
+
+		set_params_a2_perf(test_ctx->test_ch_arr[SDIO_RMNT]);
+		set_params_a2_perf(test_ctx->test_ch_arr[SDIO_DUN]);
+
+		ret = test_start();
+
+		if (ret)
+			break;
+	}
+
+	return count;
+}
+
+static ssize_t rmnet_dun_a2_perf_test_read(struct file *file,
+					    char __user *buffer,
+					    size_t count,
+					    loff_t *offset)
+{
+	memset((void *)buffer, 0, count);
+
+	snprintf(buffer, count,
+		 "\nRMNET_DUN_A2_PERFORMANCE_TEST\n"
+		 "=============================\n"
+		 "Description:\n"
+		 "TBD\n");
+
+	if (message_repeat == 1) {
+		message_repeat = 0;
+		return strnlen(buffer, count);
+	} else {
+		return 0;
+	}
+}
+
+const struct file_operations rmnet_dun_a2_perf_test_ops = {
+	.open = sdio_al_test_open,
+	.write = rmnet_dun_a2_perf_test_write,
+	.read = rmnet_dun_a2_perf_test_read,
+};
+
+/* RPC SENDER & RMNET A2 PERFORMANCE TEST */
+static ssize_t rpc_sender_rmnet_a2_perf_test_write(struct file *file,
+						    const char __user *buf,
+						    size_t count,
+						    loff_t *ppos)
+{
+	int ret = 0;
+	int i = 0;
+	int number = -1;
+
+	pr_info(TEST_MODULE_NAME "--RPC SENDER AND RMNET A2 "
+		"PERFORMANCE --\n");
+
+	number = sdio_al_test_extract_number(buf, count);
+
+	if (number < 0) {
+		pr_err(TEST_MODULE_NAME " : %s - sdio_al_test_extract_number() "
+		       "failed. number = %d\n", __func__, number);
+		return count;
+	}
+
+	for (i = 0 ; i < number ; ++i) {
+		pr_info(TEST_MODULE_NAME " - Cycle # %d / %d\n", i+1, number);
+		pr_info(TEST_MODULE_NAME " ===================");
+
+		sdio_al_test_initial_dev_and_chan(test_ctx);
+
+		set_params_loopback_9k(test_ctx->test_ch_arr[SDIO_RPC]);
+		set_params_a2_perf(test_ctx->test_ch_arr[SDIO_RMNT]);
+
+		ret = test_start();
+
+		if (ret)
+			break;
+	}
+
+	return count;
+}
+
+static ssize_t rpc_sender_rmnet_a2_perf_test_read(struct file *file,
+						   char __user *buffer,
+						   size_t count,
+						   loff_t *offset)
+{
+	memset((void *)buffer, 0, count);
+
+	snprintf(buffer, count,
+		 "\nRPC_SENDER_RMNET_A2_PERFORMANCE_TEST\n"
+		 "====================================\n"
+		 "Description:\n"
+		 "TBD\n");
+
+	if (message_repeat == 1) {
+		message_repeat = 0;
+		return strnlen(buffer, count);
+	} else {
+		return 0;
+	}
+}
+
+const struct file_operations rpc_sender_rmnet_a2_perf_test_ops = {
+	.open = sdio_al_test_open,
+	.write = rpc_sender_rmnet_a2_perf_test_write,
+	.read = rpc_sender_rmnet_a2_perf_test_read,
+};
+
+/* ALL CHANNELS TEST */
+static ssize_t all_channels_test_write(struct file *file,
+					const char __user *buf,
+					size_t count,
+					loff_t *ppos)
+{
+	int ret = 0;
+	int i = 0;
+	int number = -1;
+
+	pr_info(TEST_MODULE_NAME "-- ALL THE CHANNELS TEST --\n");
+
+	number = sdio_al_test_extract_number(buf, count);
+
+	if (number < 0) {
+		pr_err(TEST_MODULE_NAME " : %s - sdio_al_test_extract_number() "
+		       "failed. number = %d\n", __func__, number);
+		return count;
+	}
+
+	for (i = 0 ; i < number ; ++i) {
+		pr_info(TEST_MODULE_NAME " - Cycle # %d / %d\n", i+1, number);
+		pr_info(TEST_MODULE_NAME " ===================");
+
+		sdio_al_test_initial_dev_and_chan(test_ctx);
+
+		set_params_loopback_9k(test_ctx->test_ch_arr[SDIO_RPC]);
+		set_params_loopback_9k(test_ctx->test_ch_arr[SDIO_QMI]);
+		set_params_loopback_9k(test_ctx->test_ch_arr[SDIO_DIAG]);
+		set_params_a2_perf(test_ctx->test_ch_arr[SDIO_RMNT]);
+		set_params_a2_perf(test_ctx->test_ch_arr[SDIO_DUN]);
+		set_params_smem_test(test_ctx->test_ch_arr[SDIO_SMEM]);
+		set_params_loopback_9k(test_ctx->test_ch_arr[SDIO_CIQ]);
+		set_params_a2_perf(test_ctx->test_ch_arr[SDIO_CSVT]);
+
+		ret = test_start();
+
+		if (ret)
+			break;
+	}
+
+	return count;
+}
+
+static ssize_t all_channels_test_read(struct file *file,
+				       char __user *buffer,
+				       size_t count,
+				       loff_t *offset)
+{
+	memset((void *)buffer, 0, count);
+
+	snprintf(buffer, count,
+		 "\nALL_CHANNELS_TEST\n"
+		 "=================\n"
+		 "Description:\n"
+		 "TBD\n");
+
+	if (message_repeat == 1) {
+		message_repeat = 0;
+		return strnlen(buffer, count);
+	} else {
+		return 0;
+	}
+}
+
+const struct file_operations all_channels_test_ops = {
+	.open = sdio_al_test_open,
+	.write = all_channels_test_write,
+	.read = all_channels_test_read,
+};
+
+/* HOST SENDER NO LP DIAG TEST */
+static ssize_t host_sender_no_lp_diag_test_write(struct file *file,
+						  const char __user *buf,
+						  size_t count,
+						  loff_t *ppos)
+{
+	int ret = 0;
+	int i = 0;
+	int number = -1;
+
+	pr_info(TEST_MODULE_NAME "-- HOST SENDER NO LP FOR DIAG TEST --");
+
+	number = sdio_al_test_extract_number(buf, count);
+
+	if (number < 0) {
+		pr_err(TEST_MODULE_NAME " : %s - sdio_al_test_extract_number() "
+		       "failed. number = %d\n", __func__, number);
+		return count;
+	}
+
+	for (i = 0 ; i < number ; ++i) {
+		pr_info(TEST_MODULE_NAME " - Cycle # %d / %d\n", i+1, number);
+		pr_info(TEST_MODULE_NAME " ===================");
+
+		sdio_al_test_initial_dev_and_chan(test_ctx);
+
+		set_params_8k_sender_no_lp(test_ctx->test_ch_arr[SDIO_DIAG]);
+
+		ret = test_start();
+
+		if (ret)
+			break;
+	}
+
+	return count;
+}
+
+static ssize_t host_sender_no_lp_diag_test_read(struct file *file,
+						 char __user *buffer,
+						 size_t count,
+						 loff_t *offset)
+{
+	memset((void *)buffer, 0, count);
+
+	snprintf(buffer, count,
+		 "\nHOST_SENDER_NO_LP_DIAG_TEST\n"
+		 "===========================\n"
+		 "Description:\n"
+		 "TBD\n");
+
+	if (message_repeat == 1) {
+		message_repeat = 0;
+		return strnlen(buffer, count);
+	} else {
+		return 0;
+	}
+}
+
+const struct file_operations host_sender_no_lp_diag_test_ops = {
+	.open = sdio_al_test_open,
+	.write = host_sender_no_lp_diag_test_write,
+	.read = host_sender_no_lp_diag_test_read,
+};
+
+/* HOST SENDER NO LP DIAG, RPC, CIQ TEST */
+static ssize_t host_sender_no_lp_diag_rpc_ciq_test_write(
+						 struct file *file,
+						 const char __user *buf,
+						 size_t count,
+						 loff_t *ppos)
+{
+	int ret = 0;
+	int i = 0;
+	int number = -1;
+
+	pr_info(TEST_MODULE_NAME "-- HOST SENDER NO LP FOR DIAG, RPC, "
+		"CIQ TEST --");
+
+	number = sdio_al_test_extract_number(buf, count);
+
+	if (number < 0) {
+		pr_err(TEST_MODULE_NAME " : %s - sdio_al_test_extract_number() "
+		       "failed. number = %d\n", __func__, number);
+		return count;
+	}
+
+	for (i = 0 ; i < number ; ++i) {
+		pr_info(TEST_MODULE_NAME " - Cycle # %d / %d\n", i+1, number);
+		pr_info(TEST_MODULE_NAME " ===================");
+
+		sdio_al_test_initial_dev_and_chan(test_ctx);
+
+		set_params_8k_sender_no_lp(test_ctx->test_ch_arr[SDIO_DIAG]);
+		set_params_8k_sender_no_lp(test_ctx->test_ch_arr[SDIO_CIQ]);
+		set_params_8k_sender_no_lp(test_ctx->test_ch_arr[SDIO_RPC]);
+
+		ret = test_start();
+
+		if (ret)
+			break;
+	}
+
+	return count;
+}
+
+static ssize_t host_sender_no_lp_diag_rpc_ciq_test_read(
+						 struct file *file,
+						 char __user *buffer,
+						 size_t count,
+						 loff_t *offset)
+{
+	memset((void *)buffer, 0, count);
+
+	snprintf(buffer, count,
+		 "\nHOST_SENDER_NO_LP_DIAG_RPC_CIQ_TEST\n"
+		 "===================================\n"
+		 "Description:\n"
+		 "TBD\n");
+
+	if (message_repeat == 1) {
+		message_repeat = 0;
+		return strnlen(buffer, count);
+	} else {
+		return 0;
+	}
+}
+
+const struct file_operations host_sender_no_lp_diag_rpc_ciq_test_ops = {
+	.open = sdio_al_test_open,
+	.write = host_sender_no_lp_diag_rpc_ciq_test_write,
+	.read = host_sender_no_lp_diag_rpc_ciq_test_read,
+};
+
+/* RMNET SMALL PACKETS TEST */
+static ssize_t rmnet_small_packets_test_write(struct file *file,
+					       const char __user *buf,
+					       size_t count,
+					       loff_t *ppos)
+{
+	int ret = 0;
+	int i = 0;
+	int number = -1;
+
+	pr_info(TEST_MODULE_NAME "-- RMNET SMALL PACKETS (5-128) TEST --");
+
+	number = sdio_al_test_extract_number(buf, count);
+
+	if (number < 0) {
+		pr_err(TEST_MODULE_NAME " : %s - sdio_al_test_extract_number() "
+		       "failed. number = %d\n", __func__, number);
+		return count;
+	}
+
+	for (i = 0 ; i < number ; ++i) {
+		pr_info(TEST_MODULE_NAME " - Cycle # %d / %d\n", i+1, number);
+		pr_info(TEST_MODULE_NAME " ===================");
+
+		sdio_al_test_initial_dev_and_chan(test_ctx);
+
+		set_params_a2_small_pkts(test_ctx->test_ch_arr[SDIO_RMNT]);
+
+		ret = test_start();
+
+		if (ret)
+			break;
+	}
+
+	return count;
+}
+
+static ssize_t rmnet_small_packets_test_read(struct file *file,
+					      char __user *buffer,
+					      size_t count,
+					      loff_t *offset)
+{
+	memset((void *)buffer, 0, count);
+
+	snprintf(buffer, count,
+		 "\nRMNET_SMALL_PACKETS_TEST\n"
+		 "========================\n"
+		 "Description:\n"
+		 "TBD\n");
+
+	if (message_repeat == 1) {
+		message_repeat = 0;
+		return strnlen(buffer, count);
+	} else {
+		return 0;
+	}
+}
+
+const struct file_operations rmnet_small_packets_test_ops = {
+	.open = sdio_al_test_open,
+	.write = rmnet_small_packets_test_write,
+	.read = rmnet_small_packets_test_read,
+};
+
+/* RMNET RTT TEST */
+static ssize_t rmnet_rtt_test_write(struct file *file,
+				     const char __user *buf,
+				     size_t count,
+				     loff_t *ppos)
+{
+	int ret = 0;
+	int i = 0;
+	int number = -1;
+
+	pr_info(TEST_MODULE_NAME "-- RMNET RTT TEST --");
+
+	number = sdio_al_test_extract_number(buf, count);
+
+	if (number < 0) {
+		pr_err(TEST_MODULE_NAME " : %s - sdio_al_test_extract_number() "
+		       "failed. number = %d\n", __func__, number);
+		return count;
+	}
+
+	for (i = 0 ; i < number ; ++i) {
+		pr_info(TEST_MODULE_NAME " - Cycle # %d / %d\n", i+1, number);
+		pr_info(TEST_MODULE_NAME " ===================");
+
+		sdio_al_test_initial_dev_and_chan(test_ctx);
+
+		set_params_rtt(test_ctx->test_ch_arr[SDIO_RMNT]);
+
+		ret = test_start();
+
+		if (ret)
+			break;
+	}
+
+	return count;
+}
+
+static ssize_t rmnet_rtt_test_read(struct file *file,
+				    char __user *buffer,
+				    size_t count,
+				    loff_t *offset)
+{
+	memset((void *)buffer, 0, count);
+
+	snprintf(buffer, count,
+		 "\nRMNET_RTT_TEST\n"
+		 "==============\n"
+		 "Description:\n"
+		 "TBD\n");
+
+	if (message_repeat == 1) {
+		message_repeat = 0;
+		return strnlen(buffer, count);
+	} else {
+		return 0;
+	}
+}
+
+const struct file_operations rmnet_rtt_test_ops = {
+	.open = sdio_al_test_open,
+	.write = rmnet_rtt_test_write,
+	.read = rmnet_rtt_test_read,
+};
+
+/* CSVT RTT TEST */
+static ssize_t csvt_rtt_test_write(struct file *file,
+				    const char __user *buf,
+				    size_t count,
+				    loff_t *ppos)
+{
+	int ret = 0;
+	int i = 0;
+	int number = -1;
+
+	pr_info(TEST_MODULE_NAME "-- CSVT RTT TEST --");
+
+	number = sdio_al_test_extract_number(buf, count);
+
+	if (number < 0) {
+		pr_err(TEST_MODULE_NAME " : %s - sdio_al_test_extract_number() "
+		       "failed. number = %d\n", __func__, number);
+		return count;
+	}
+
+	for (i = 0 ; i < number ; ++i) {
+		pr_info(TEST_MODULE_NAME " - Cycle # %d / %d\n", i+1, number);
+		pr_info(TEST_MODULE_NAME " ===================");
+
+		sdio_al_test_initial_dev_and_chan(test_ctx);
+
+		set_params_rtt(test_ctx->test_ch_arr[SDIO_CSVT]);
+
+		ret = test_start();
+
+		if (ret)
+			break;
+	}
+
+	return count;
+}
+
+static ssize_t csvt_rtt_test_read(struct file *file,
+				   char __user *buffer,
+				   size_t count,
+				   loff_t *offset)
+{
+	memset((void *)buffer, 0, count);
+
+	snprintf(buffer, count,
+		 "\nCSVT_RTT_TEST\n"
+		 "==============\n"
+		 "Description:\n"
+		 "In this test the HOST send a message of %d bytes "
+		 "to the CLIENT\n\n"
+		 "END OF DESCRIPTION\n", SDIO_CSVT_RTT_PACKET_SIZE);
+
+	if (message_repeat == 1) {
+		message_repeat = 0;
+		return strnlen(buffer, count);
+	} else {
+		return 0;
+	}
+}
+
+const struct file_operations csvt_rtt_test_ops = {
+	.open = sdio_al_test_open,
+	.write = csvt_rtt_test_write,
+	.read = csvt_rtt_test_read,
+};
+
+/* MODEM RESET RPC TEST */
+static ssize_t modem_reset_rpc_test_write(struct file *file,
+					   const char __user *buf,
+					   size_t count,
+					   loff_t *ppos)
+{
+	int ret = 0;
+	int i = 0;
+	int number = -1;
+
+	pr_info(TEST_MODULE_NAME "-- MODEM RESET - RPC CHANNEL TEST --");
+
+	number = sdio_al_test_extract_number(buf, count);
+
+	if (number < 0) {
+		pr_err(TEST_MODULE_NAME " : %s - sdio_al_test_extract_number() "
+		       "failed. number = %d\n", __func__, number);
+		return count;
+	}
+
+	for (i = 0 ; i < number ; ++i) {
+		pr_info(TEST_MODULE_NAME " - Cycle # %d / %d\n", i+1, number);
+		pr_info(TEST_MODULE_NAME " ===================");
+
+		sdio_al_test_initial_dev_and_chan(test_ctx);
+
+		set_params_modem_reset(test_ctx->test_ch_arr[SDIO_RPC]);
+
+		ret = test_start();
+
+		if (ret)
+			break;
+	}
+
+	return count;
+}
+
+static ssize_t modem_reset_rpc_test_read(struct file *file,
+					  char __user *buffer,
+					  size_t count,
+					  loff_t *offset)
+{
+	memset((void *)buffer, 0, count);
+
+	snprintf(buffer, count,
+		 "\nMODEM_RESET_RPC_TEST\n"
+		 "====================\n"
+		 "Description:\n"
+		 "TBD\n");
+
+	if (message_repeat == 1) {
+		message_repeat = 0;
+		return strnlen(buffer, count);
+	} else {
+		return 0;
+	}
+}
+
+const struct file_operations modem_reset_rpc_test_ops = {
+	.open = sdio_al_test_open,
+	.write = modem_reset_rpc_test_write,
+	.read = modem_reset_rpc_test_read,
+};
+
+/* MODEM RESET RMNET TEST */
+static ssize_t modem_reset_rmnet_test_write(struct file *file,
+					     const char __user *buf,
+					     size_t count,
+					     loff_t *ppos)
+{
+	int ret = 0;
+	int i = 0;
+	int number = -1;
+
+	pr_info(TEST_MODULE_NAME "-- MODEM RESET - RMNT CHANNEL TEST --");
+
+	number = sdio_al_test_extract_number(buf, count);
+
+	if (number < 0) {
+		pr_err(TEST_MODULE_NAME " : %s - sdio_al_test_extract_number() "
+		       "failed. number = %d\n", __func__, number);
+		return count;
+	}
+
+	for (i = 0 ; i < number ; ++i) {
+		pr_info(TEST_MODULE_NAME " - Cycle # %d / %d\n", i+1, number);
+		pr_info(TEST_MODULE_NAME " ===================");
+
+		sdio_al_test_initial_dev_and_chan(test_ctx);
+
+		set_params_modem_reset(test_ctx->test_ch_arr[SDIO_RMNT]);
+
+		ret = test_start();
+
+		if (ret)
+			break;
+	}
+
+	return count;
+}
+
+static ssize_t modem_reset_rmnet_test_read(struct file *file,
+					    char __user *buffer,
+					    size_t count,
+					    loff_t *offset)
+{
+	memset((void *)buffer, 0, count);
+
+	snprintf(buffer, count,
+		 "\nMODEM_RESET_RMNET_TEST\n"
+		 "======================\n"
+		 "Description:\n"
+		 "TBD\n");
+
+	if (message_repeat == 1) {
+		message_repeat = 0;
+		return strnlen(buffer, count);
+	} else {
+		return 0;
+	}
+}
+
+const struct file_operations modem_reset_rmnet_test_ops = {
+	.open = sdio_al_test_open,
+	.write = modem_reset_rmnet_test_write,
+	.read = modem_reset_rmnet_test_read,
+};
+
+/* MODEM RESET - CHANNELS IN 4BIT DEVICE TEST */
+static ssize_t modem_reset_channels_4bit_dev_test_write(
+						struct file *file,
+						const char __user *buf,
+						size_t count,
+						loff_t *ppos)
+{
+	int ret = 0;
+	int i = 0;
+	int number = -1;
+
+	pr_info(TEST_MODULE_NAME "-- MODEM RESET - ALL CHANNELS IN "
+		"4BIT DEVICE TEST --");
+
+	number = sdio_al_test_extract_number(buf, count);
+
+	if (number < 0) {
+		pr_err(TEST_MODULE_NAME " : %s - sdio_al_test_extract_number() "
+		       "failed. number = %d\n", __func__, number);
+		return count;
+	}
+
+	for (i = 0 ; i < number ; ++i) {
+		pr_info(TEST_MODULE_NAME " - Cycle # %d / %d\n", i+1, number);
+		pr_info(TEST_MODULE_NAME " ===================");
+
+		sdio_al_test_initial_dev_and_chan(test_ctx);
+
+		set_params_modem_reset(test_ctx->test_ch_arr[SDIO_RPC]);
+		set_params_modem_reset(test_ctx->test_ch_arr[SDIO_QMI]);
+		set_params_modem_reset(test_ctx->test_ch_arr[SDIO_DIAG]);
+
+		ret = test_start();
+
+		if (ret)
+			break;
+	}
+
+	return count;
+}
+
+static ssize_t modem_reset_channels_4bit_dev_test_read(
+						struct file *file,
+						char __user *buffer,
+						size_t count,
+						loff_t *offset)
+{
+	memset((void *)buffer, 0, count);
+
+	snprintf(buffer, count,
+		 "\nMODEM_RESET_CHANNELS_4BIT_DEV_TEST\n"
+		 "==================================\n"
+		 "Description:\n"
+		 "TBD\n");
+
+	if (message_repeat == 1) {
+		message_repeat = 0;
+		return strnlen(buffer, count);
+	} else {
+		return 0;
+	}
+}
+
+const struct file_operations modem_reset_channels_4bit_dev_test_ops = {
+	.open = sdio_al_test_open,
+	.write = modem_reset_channels_4bit_dev_test_write,
+	.read = modem_reset_channels_4bit_dev_test_read,
+};
+
+/* MODEM RESET - CHANNELS IN 8BIT DEVICE TEST */
+static ssize_t modem_reset_channels_8bit_dev_test_write(
+						struct file *file,
+						const char __user *buf,
+						size_t count,
+						loff_t *ppos)
+{
+	int ret = 0;
+	int i = 0;
+	int number = -1;
+
+	pr_info(TEST_MODULE_NAME "-- MODEM RESET - ALL CHANNELS IN "
+		"8BIT DEVICE TEST --");
+
+	number = sdio_al_test_extract_number(buf, count);
+
+	if (number < 0) {
+		pr_err(TEST_MODULE_NAME " : %s - sdio_al_test_extract_number() "
+		       "failed. number = %d\n", __func__, number);
+		return count;
+	}
+
+	for (i = 0 ; i < number ; ++i) {
+		pr_info(TEST_MODULE_NAME " - Cycle # %d / %d\n", i+1, number);
+		pr_info(TEST_MODULE_NAME " ===================");
+
+		sdio_al_test_initial_dev_and_chan(test_ctx);
+
+		set_params_modem_reset(test_ctx->test_ch_arr[SDIO_RMNT]);
+		set_params_modem_reset(test_ctx->test_ch_arr[SDIO_DUN]);
+		set_params_modem_reset(test_ctx->test_ch_arr[SDIO_CIQ]);
+
+		ret = test_start();
+
+		if (ret)
+			break;
+	}
+
+	return count;
+}
+
+static ssize_t modem_reset_channels_8bit_dev_test_read(
+						struct file *file,
+						char __user *buffer,
+						size_t count,
+						loff_t *offset)
+{
+	memset((void *)buffer, 0, count);
+
+	snprintf(buffer, count,
+		 "\nMODEM_RESET_CHANNELS_8BIT_DEV_TEST\n"
+		 "==================================\n"
+		 "Description:\n"
+		 "TBD\n");
+
+	if (message_repeat == 1) {
+		message_repeat = 0;
+		return strnlen(buffer, count);
+	} else {
+		return 0;
+	}
+}
+
+const struct file_operations modem_reset_channels_8bit_dev_test_ops = {
+	.open = sdio_al_test_open,
+	.write = modem_reset_channels_8bit_dev_test_write,
+	.read = modem_reset_channels_8bit_dev_test_read,
+};
+
+/* MODEM RESET - ALL CHANNELS TEST */
+static ssize_t modem_reset_all_channels_test_write(struct file *file,
+						    const char __user *buf,
+						    size_t count,
+						    loff_t *ppos)
+{
+	int ret = 0;
+	int i = 0;
+	int number = -1;
+
+	pr_info(TEST_MODULE_NAME "-- MODEM RESET - ALL CHANNELS TEST --");
+
+	number = sdio_al_test_extract_number(buf, count);
+
+	if (number < 0) {
+		pr_err(TEST_MODULE_NAME " : %s - sdio_al_test_extract_number() "
+		       "failed. number = %d\n", __func__, number);
+		return count;
+	}
+
+	for (i = 0 ; i < number ; ++i) {
+		pr_info(TEST_MODULE_NAME " - Cycle # %d / %d\n", i+1, number);
+		pr_info(TEST_MODULE_NAME " ===================");
+
+		sdio_al_test_initial_dev_and_chan(test_ctx);
+
+		set_params_modem_reset(test_ctx->test_ch_arr[SDIO_RPC]);
+		set_params_modem_reset(test_ctx->test_ch_arr[SDIO_QMI]);
+		set_params_modem_reset(test_ctx->test_ch_arr[SDIO_DIAG]);
+		set_params_modem_reset(test_ctx->test_ch_arr[SDIO_RMNT]);
+		set_params_modem_reset(test_ctx->test_ch_arr[SDIO_DUN]);
+		set_params_modem_reset(test_ctx->test_ch_arr[SDIO_CIQ]);
+
+		ret = test_start();
+
+		if (ret)
+			break;
+	}
+
+	return count;
+}
+
+static ssize_t modem_reset_all_channels_test_read(struct file *file,
+						   char __user *buffer,
+						   size_t count,
+						   loff_t *offset)
+{
+	memset((void *)buffer, 0, count);
+
+	snprintf(buffer, count,
+		 "\nMODEM_RESET_ALL_CHANNELS_TEST\n"
+		 "=============================\n"
+		 "Description:\n"
+		 "TBD\n");
+
+	if (message_repeat == 1) {
+		message_repeat = 0;
+		return strnlen(buffer, count);
+	} else {
+		return 0;
+	}
+}
+
+const struct file_operations modem_reset_all_channels_test_ops = {
+	.open = sdio_al_test_open,
+	.write = modem_reset_all_channels_test_write,
+	.read = modem_reset_all_channels_test_read,
+};
+
+/* HOST SENDER WITH OPEN/CLOSE TEST */
+static ssize_t open_close_test_write(struct file *file,
+						   const char __user *buf,
+						   size_t count,
+						   loff_t *ppos)
+{
+	int ret = 0;
+	struct test_channel **ch_arr = test_ctx->test_ch_arr;
+	int i = 0;
+	int number = -1;
+
+	pr_info(TEST_MODULE_NAME "-- HOST SENDER WITH OPEN/CLOSE TEST --");
+
+	number = sdio_al_test_extract_number(buf, count);
+
+	if (number < 0) {
+		pr_err(TEST_MODULE_NAME " : %s - sdio_al_test_extract_number() "
+		       "failed. number = %d\n", __func__, number);
+		return count;
+	}
+
+	for (i = 0 ; i < number ; ++i) {
+		pr_info(TEST_MODULE_NAME " - Cycle # %d / %d\n", i+1, number);
+		pr_info(TEST_MODULE_NAME " ===================");
+
+		sdio_al_test_initial_dev_and_chan(test_ctx);
+
+		set_params_loopback_9k_close(ch_arr[SDIO_DIAG]);
+		set_params_loopback_9k_close(ch_arr[SDIO_CIQ]);
+		set_params_loopback_9k_close(ch_arr[SDIO_RPC]);
+		set_params_loopback_9k_close(ch_arr[SDIO_SMEM]);
+		set_params_loopback_9k_close(ch_arr[SDIO_QMI]);
+		set_params_loopback_9k_close(ch_arr[SDIO_RMNT]);
+		set_params_loopback_9k_close(ch_arr[SDIO_DUN]);
+		set_params_loopback_9k_close(ch_arr[SDIO_CSVT]);
+
+		ret = test_start();
+
+		if (ret)
+			break;
+
+		pr_info(TEST_MODULE_NAME " -- correctness test for"
+				"DIAG, CIQ ");
+		set_params_loopback_9k(ch_arr[SDIO_DIAG]);
+		set_params_loopback_9k(ch_arr[SDIO_CIQ]);
+
+		ret = test_start();
+
+		if (ret)
+			break;
+	}
+
+	return count;
+}
+
+static ssize_t open_close_test_read(struct file *file,
+						  char __user *buffer,
+						  size_t count,
+						  loff_t *offset)
+{
+	memset((void *)buffer, 0, count);
+
+	snprintf(buffer, count,
+		 "\nOPEN_CLOSE_TEST\n"
+		 "============================\n"
+		 "Description:\n"
+		 "In this test the host sends 5k packets to the modem in the "
+		 "following sequence: Send a random burst of packets on "
+		 "Diag, CIQ and Rmnet channels, read 0 or a random number "
+		 "of packets, close and re-open the channel. At the end of the "
+		 "test, the channel is verified by running a loopback test\n\n"
+		 "END OF DESCRIPTION\n");
+
+	if (message_repeat == 1) {
+		message_repeat = 0;
+		return strnlen(buffer, count);
+	} else {
+		return 0;
+	}
+}
+
+const struct file_operations open_close_test_ops = {
+	.open = sdio_al_test_open,
+	.write = open_close_test_write,
+	.read = open_close_test_read,
+};
+
+/* HOST SENDER WITH OPEN/CLOSE FOR DUN & RMNET TEST */
+static ssize_t open_close_dun_rmnet_test_write(struct file *file,
+						   const char __user *buf,
+						   size_t count,
+						   loff_t *ppos)
+{
+	int ret = 0;
+	struct test_channel **ch_arr = test_ctx->test_ch_arr;
+	int i = 0;
+	int number = -1;
+
+	pr_info(TEST_MODULE_NAME "-- HOST SENDER WITH OPEN/CLOSE FOR "
+		"DUN AND RMNET TEST --");
+
+	number = sdio_al_test_extract_number(buf, count);
+
+	if (number < 0) {
+		pr_err(TEST_MODULE_NAME " : %s - sdio_al_test_extract_number() "
+		       "failed. number = %d\n", __func__, number);
+		return count;
+	}
+
+	for (i = 0 ; i < number ; ++i) {
+		pr_info(TEST_MODULE_NAME " - Cycle # %d / %d\n", i+1, number);
+		pr_info(TEST_MODULE_NAME " ===================");
+
+		sdio_al_test_initial_dev_and_chan(test_ctx);
+
+		set_params_loopback_9k_close(ch_arr[SDIO_DUN]);
+		set_params_loopback_9k_close(ch_arr[SDIO_RMNT]);
+
+		ret = test_start();
+
+		if (ret)
+			break;
+	}
+
+	return count;
+}
+
+static ssize_t open_close_dun_rmnet_test_read(struct file *file,
+						  char __user *buffer,
+						  size_t count,
+						  loff_t *offset)
+{
+	memset((void *)buffer, 0, count);
+
+	snprintf(buffer, count,
+		 "\nOPEN_CLOSE_DUN_RMNET_TEST\n"
+		 "============================\n"
+		 "Description:\n"
+		 "In this test the host sends 5k packets to the modem in the "
+		 "following sequence: Send a random burst of packets on "
+		 "DUN and Rmnet channels, read 0 or a random number "
+		 "of packets, close and re-open the channel.\n\n"
+		 "END OF DESCRIPTION\n");
+
+	if (message_repeat == 1) {
+		message_repeat = 0;
+		return strnlen(buffer, count);
+	} else {
+		return 0;
+	}
+}
+
+const struct file_operations open_close_dun_rmnet_test_ops = {
+	.open = sdio_al_test_open,
+	.write = open_close_dun_rmnet_test_write,
+	.read = open_close_dun_rmnet_test_read,
+};
+
+/* CLOSE CHANNEL & LPM TEST HOST WAKES THE CLIENT TEST */
+static ssize_t close_chan_lpm_test_write(struct file *file,
+					  const char __user *buf,
+					  size_t count,
+					  loff_t *ppos)
+{
+	int ret = 0;
+	int i = 0;
+	int channel_num = 0;
+	int number = -1;
+
+	pr_info(TEST_MODULE_NAME "-- CLOSE CHANNEL & LPM TEST "
+		"HOST WAKES THE CLIENT TEST --\n");
+
+	number = sdio_al_test_extract_number(buf, count);
+
+	if (number < 0) {
+		pr_err(TEST_MODULE_NAME " : %s - sdio_al_test_extract_number() "
+		       "failed. number = %d\n", __func__, number);
+		return count;
+	}
+
+	for (i = 0 ; i < number ; ++i) {
+		pr_info(TEST_MODULE_NAME " - Cycle # %d / %d\n", i+1, number);
+		pr_info(TEST_MODULE_NAME " ===================");
+
+		sdio_al_test_initial_dev_and_chan(test_ctx);
+
+		for (channel_num = 0 ; channel_num < SDIO_MAX_CHANNELS ;
+		     channel_num++) {
+
+			ret = close_channel_lpm_test(channel_num);
+
+			if (ret)
+				break;
+
+			set_params_lpm_test(test_ctx->test_ch_arr[SDIO_RPC],
+					    SDIO_TEST_LPM_HOST_WAKER, 120);
+
+			ret = test_start();
+
+			if (ret)
+				break;
+		}
+
+		if (ret) {
+			pr_err(TEST_MODULE_NAME " -- Close channel & LPM Test "
+			       "FAILED: %d --\n", ret);
+		} else {
+			pr_err(TEST_MODULE_NAME " -- Close channel & LPM Test "
+			       "PASSED\n");
+		}
+	}
+
+	return count;
+}
+
+static ssize_t close_chan_lpm_test_read(struct file *file,
+					 char __user *buffer,
+					 size_t count,
+					 loff_t *offset)
+{
+	memset((void *)buffer, 0, count);
+
+	snprintf(buffer, count,
+		 "\nCLOSE_CHAN_LPM_TEST\n"
+		 "===================\n"
+		 "Description:\n"
+		 "TBD\n");
+
+	if (message_repeat == 1) {
+		message_repeat = 0;
+		return strnlen(buffer, count);
+	} else {
+		return 0;
+	}
+}
+
+const struct file_operations close_chan_lpm_test_ops = {
+	.open = sdio_al_test_open,
+	.write = close_chan_lpm_test_write,
+	.read = close_chan_lpm_test_read,
+};
+
+/* LPM TEST FOR DEVICE 1. CLIENT WAKES THE HOST TEST */
+static ssize_t lpm_test_client_wakes_host_test_write(struct file *file,
+						      const char __user *buf,
+						      size_t count,
+						      loff_t *ppos)
+{
+	int ret = 0;
+	int i = 0;
+	int number = -1;
+
+	pr_info(TEST_MODULE_NAME "-- LPM TEST FOR DEVICE 1. CLIENT "
+		"WAKES THE HOST TEST --\n");
+
+	number = sdio_al_test_extract_number(buf, count);
+
+	if (number < 0) {
+		pr_err(TEST_MODULE_NAME " : %s - sdio_al_test_extract_number() "
+		       "failed. number = %d\n", __func__, number);
+		return count;
+	}
+
+	for (i = 0 ; i < number ; ++i) {
+		pr_info(TEST_MODULE_NAME " - Cycle # %d / %d\n", i+1, number);
+		pr_info(TEST_MODULE_NAME " ===================");
+
+		sdio_al_test_initial_dev_and_chan(test_ctx);
+
+		set_params_lpm_test(test_ctx->test_ch_arr[SDIO_RPC],
+				    SDIO_TEST_LPM_CLIENT_WAKER, 90);
+
+		ret = test_start();
+
+		if (ret)
+			break;
+	}
+
+	return count;
+}
+
+static ssize_t lpm_test_client_wakes_host_test_read(struct file *file,
+						     char __user *buffer,
+						     size_t count,
+						     loff_t *offset)
+{
+	memset((void *)buffer, 0, count);
+
+	snprintf(buffer, count,
+		 "\nLPM_TEST_CLIENT_WAKES_HOST_TEST\n"
+		 "===============================\n"
+		 "Description:\n"
+		 "In this test, the HOST is going into LPM mode,\n"
+		 "and the CLIENT is responsible to send it a message\n"
+		 "in order to wake it up\n\n"
+		 "END OF DESCRIPTION\n");
+
+	if (message_repeat == 1) {
+		message_repeat = 0;
+		return strnlen(buffer, count);
+	} else {
+		return 0;
+	}
+}
+
+const struct file_operations lpm_test_client_wakes_host_test_ops = {
+	.open = sdio_al_test_open,
+	.write = lpm_test_client_wakes_host_test_write,
+	.read = lpm_test_client_wakes_host_test_read,
+};
+
+/* LPM TEST FOR DEVICE 1. HOST WAKES THE CLIENT TEST */
+static ssize_t lpm_test_host_wakes_client_test_write(struct file *file,
+						      const char __user *buf,
+						      size_t count,
+						      loff_t *ppos)
+{
+	int ret = 0;
+	int i = 0;
+	int number = -1;
+
+	pr_info(TEST_MODULE_NAME "-- LPM TEST FOR DEVICE 1. HOST "
+		"WAKES THE CLIENT TEST --\n");
+
+	number = sdio_al_test_extract_number(buf, count);
+
+	if (number < 0) {
+		pr_err(TEST_MODULE_NAME " : %s - sdio_al_test_extract_number() "
+		       "failed. number = %d\n", __func__, number);
+		return count;
+	}
+
+	for (i = 0 ; i < number ; ++i) {
+		pr_info(TEST_MODULE_NAME " - Cycle # %d / %d\n", i+1, number);
+		pr_info(TEST_MODULE_NAME " ===================");
+
+		sdio_al_test_initial_dev_and_chan(test_ctx);
+
+		set_params_lpm_test(test_ctx->test_ch_arr[SDIO_RPC],
+			    SDIO_TEST_LPM_HOST_WAKER, 120);
+
+		ret = test_start();
+
+		if (ret)
+			break;
+	}
+
+	return count;
+}
+
+static ssize_t lpm_test_host_wakes_client_test_read(struct file *file,
+						     char __user *buffer,
+						     size_t count,
+						     loff_t *offset)
+{
+	memset((void *)buffer, 0, count);
+
+	snprintf(buffer, count,
+		 "\nLPM_TEST_HOST_WAKES_CLIENT_TEST\n"
+		 "===============================\n"
+		 "Description:\n"
+		 "In this test, the CLIENT goes into LPM mode, and the\n"
+		 "HOST is responsible to send it a message\n"
+		 "in order to wake it up\n\n"
+		 "END OF DESCRIPTION\n");
+
+	if (message_repeat == 1) {
+		message_repeat = 0;
+		return strnlen(buffer, count);
+	} else {
+		return 0;
+	}
+}
+
+const struct file_operations lpm_test_host_wakes_client_test_ops = {
+	.open = sdio_al_test_open,
+	.write = lpm_test_host_wakes_client_test_write,
+	.read = lpm_test_host_wakes_client_test_read,
+};
+
+/* LPM TEST RANDOM, SINGLE CHANNEL TEST */
+static ssize_t lpm_test_random_single_channel_test_write(
+						struct file *file,
+						const char __user *buf,
+						size_t count,
+						loff_t *ppos)
+{
+	int ret = 0;
+	int i = 0;
+	int number = -1;
+
+	pr_info(TEST_MODULE_NAME "-- LPM TEST RANDOM SINGLE "
+		"CHANNEL TEST --\n");
+
+	number = sdio_al_test_extract_number(buf, count);
+
+	if (number < 0) {
+		pr_err(TEST_MODULE_NAME " : %s - sdio_al_test_extract_number() "
+		       "failed. number = %d\n", __func__, number);
+		return count;
+	}
+
+	for (i = 0 ; i < number ; ++i) {
+		pr_info(TEST_MODULE_NAME " - Cycle # %d / %d\n", i+1, number);
+		pr_info(TEST_MODULE_NAME " ===================");
+
+		sdio_al_test_initial_dev_and_chan(test_ctx);
+
+		set_pseudo_random_seed();
+		set_params_lpm_test(test_ctx->test_ch_arr[SDIO_RPC],
+				    SDIO_TEST_LPM_RANDOM, 0);
+
+		ret = test_start();
+
+		if (ret)
+			break;
+	}
+
+	return count;
+}
+
+static ssize_t lpm_test_random_single_channel_test_read(
+						struct file *file,
+						char __user *buffer,
+						size_t count,
+						loff_t *offset)
+{
+	memset((void *)buffer, 0, count);
+
+	snprintf(buffer, count,
+		 "\nLPM_TEST_RANDOM_SINGLE_CHANNEL_TEST\n"
+		 "===================================\n"
+		 "Description:\n"
+		 "In this test, the HOST and CLIENT "
+		 "send messages to each other,\n"
+		 "random in time, over RPC channel only.\n"
+		 "All events are being recorded, and later on,\n"
+		 "they are being analysed by the HOST and by the CLIENT\n,"
+		 "in order to check if the LPM mechanism worked properly,\n"
+		 "meaning:"
+		 " When all the relevant conditions are met, a device should:\n"
+		 "1. Go to sleep\n"
+		 "2. Wake up\n"
+		 "3. Stay awake\n\n"
+		 "END OF DESCRIPTION\n");
+
+	if (message_repeat == 1) {
+		message_repeat = 0;
+		return strnlen(buffer, count);
+	} else {
+		return 0;
+	}
+}
+
+const struct file_operations lpm_test_random_single_channel_test_ops = {
+	.open = sdio_al_test_open,
+	.write = lpm_test_random_single_channel_test_write,
+	.read = lpm_test_random_single_channel_test_read,
+};
+
+/* LPM TEST RANDOM, MULTI CHANNEL TEST */
+static ssize_t lpm_test_random_multi_channel_test_write(
+						struct file *file,
+						const char __user *buf,
+						size_t count,
+						loff_t *ppos)
+{
+	int ret = 0;
+	int i = 0;
+	int number = -1;
+
+	pr_info(TEST_MODULE_NAME "-- LPM TEST RANDOM MULTI CHANNEL TEST --\n");
+
+	number = sdio_al_test_extract_number(buf, count);
+
+	if (number < 0) {
+		pr_err(TEST_MODULE_NAME " : %s - sdio_al_test_extract_number() "
+		       "failed. number = %d\n", __func__, number);
+		return count;
+	}
+
+	for (i = 0 ; i < number ; ++i) {
+		pr_info(TEST_MODULE_NAME " - Cycle # %d / %d\n", i+1, number);
+		pr_info(TEST_MODULE_NAME " ===================");
+
+		sdio_al_test_initial_dev_and_chan(test_ctx);
+
+		set_pseudo_random_seed();
+
+		set_params_lpm_test(test_ctx->test_ch_arr[SDIO_RPC],
+				    SDIO_TEST_LPM_RANDOM, 0);
+		set_params_lpm_test(test_ctx->test_ch_arr[SDIO_CIQ],
+				    SDIO_TEST_LPM_RANDOM, 0);
+		set_params_lpm_test(test_ctx->test_ch_arr[SDIO_DIAG],
+				    SDIO_TEST_LPM_RANDOM, 0);
+		set_params_lpm_test(test_ctx->test_ch_arr[SDIO_QMI],
+				SDIO_TEST_LPM_RANDOM, 0);
+
+		ret = test_start();
+
+		if (ret)
+			break;
+	}
+
+	return count;
+}
+
+static ssize_t lpm_test_random_multi_channel_test_read(
+				 struct file *file,
+				 char __user *buffer,
+				 size_t count,
+				 loff_t *offset)
+{
+	memset((void *)buffer, 0, count);
+
+	snprintf(buffer, count,
+		 "\nLPM_TEST_RANDOM_MULTI_CHANNEL_TEST\n"
+		 "==================================\n"
+		 "Description:\n"
+		 "In this test, the HOST and CLIENT "
+		 "send messages to each other,\n"
+		 "random in time, over RPC, QMI, DIAG AND CIQ channels\n"
+		 "(i.e, on both SDIO devices).\n"
+		 "All events are being recorded, and later on,\n"
+		 "they are being analysed by the HOST and by the CLIENT,\n"
+		 "in order to check if the LPM mechanism worked properly,\n"
+		 "meaning:"
+		 " When all the relevant conditions are met, a device should:\n"
+		 "1. Go to sleep\n"
+		 "2. Wake up\n"
+		 "3. Stay awake\n\n"
+		 "END OF DESCRIPTION\n");
+
+	if (message_repeat == 1) {
+		message_repeat = 0;
+		return strnlen(buffer, count);
+	} else {
+		return 0;
+	}
+}
+
+const struct file_operations lpm_test_random_multi_channel_test_ops = {
+	.open = sdio_al_test_open,
+	.write = lpm_test_random_multi_channel_test_write,
+	.read = lpm_test_random_multi_channel_test_read,
+};
+
 static int sdio_al_test_debugfs_init(void)
 {
 	test_ctx->debug.debug_root = debugfs_create_dir("sdio_al_test",
@@ -296,21 +2443,224 @@ static int sdio_al_test_debugfs_init(void)
 
 	test_ctx->debug.debug_test_result = debugfs_create_u32(
 					"test_result",
-					S_IRUGO | S_IWUSR |S_IWGRP,
+					S_IRUGO | S_IWUGO,
 					test_ctx->debug.debug_root,
 					&test_ctx->test_result);
 
 	test_ctx->debug.debug_dun_throughput = debugfs_create_u32(
 					"dun_throughput",
-					S_IRUGO | S_IWUSR |S_IWGRP,
+					S_IRUGO | S_IWUGO,
 					test_ctx->debug.debug_root,
 					&test_ctx->debug.dun_throughput);
 
 	test_ctx->debug.debug_rmnt_throughput = debugfs_create_u32(
 					"rmnt_throughput",
-					S_IRUGO | S_IWUSR |S_IWGRP,
+					S_IRUGO | S_IWUGO,
 					test_ctx->debug.debug_root,
 					&test_ctx->debug.rmnt_throughput);
+
+	test_ctx->debug.rpc_sender_test =
+		debugfs_create_file("10_rpc_sender_test",
+				    S_IRUGO | S_IWUGO,
+				    test_ctx->debug.debug_root,
+				    NULL,
+				    &rpc_sender_test_ops);
+
+	test_ctx->debug.rpc_qmi_diag_sender_test =
+		debugfs_create_file("20_rpc_qmi_diag_sender_test",
+				    S_IRUGO | S_IWUGO,
+				    test_ctx->debug.debug_root,
+				    NULL,
+				    &rpc_qmi_diag_sender_test_ops);
+
+	test_ctx->debug.rmnet_a2_validation_test =
+		debugfs_create_file("30_rmnet_a2_validation_test",
+				    S_IRUGO | S_IWUGO,
+				    test_ctx->debug.debug_root,
+				    NULL,
+				    &rmnet_a2_validation_test_ops);
+
+	test_ctx->debug.dun_a2_validation_test =
+		debugfs_create_file("40_dun_a2_validation_test",
+				    S_IRUGO | S_IWUGO,
+				    test_ctx->debug.debug_root,
+				    NULL,
+				    &dun_a2_validation_test_ops);
+
+	test_ctx->debug.rmnet_a2_perf_test =
+		debugfs_create_file("50_rmnet_a2_perf_test",
+				    S_IRUGO | S_IWUGO,
+				    test_ctx->debug.debug_root,
+				    NULL,
+				    &rmnet_a2_perf_test_ops);
+
+	test_ctx->debug.dun_a2_perf_test =
+		debugfs_create_file("60_dun_a2_perf_test",
+				    S_IRUGO | S_IWUGO,
+				    test_ctx->debug.debug_root,
+				    NULL,
+				    &dun_a2_perf_test_ops);
+
+	test_ctx->debug.csvt_a2_perf_test =
+		debugfs_create_file("71_csvt_a2_perf_test",
+				    S_IRUGO | S_IWUGO,
+				    test_ctx->debug.debug_root,
+				    NULL,
+				    &csvt_a2_perf_test_ops);
+
+	test_ctx->debug.rmnet_dun_a2_perf_test =
+		debugfs_create_file("70_rmnet_dun_a2_perf_test",
+				    S_IRUGO | S_IWUGO,
+				    test_ctx->debug.debug_root,
+				    NULL,
+				    &rmnet_dun_a2_perf_test_ops);
+
+	test_ctx->debug.rpc_sender_rmnet_a2_perf_test =
+		debugfs_create_file("80_rpc_sender_rmnet_a2_perf_test",
+				    S_IRUGO | S_IWUGO,
+				    test_ctx->debug.debug_root,
+				    NULL,
+				    &rpc_sender_rmnet_a2_perf_test_ops);
+
+	test_ctx->debug.smem_test =
+		debugfs_create_file("90_smem_test",
+				    S_IRUGO | S_IWUGO,
+				    test_ctx->debug.debug_root,
+				    NULL,
+				    &smem_test_ops);
+
+	test_ctx->debug.smem_rpc_test =
+		debugfs_create_file("100_smem_rpc_test",
+				    S_IRUGO | S_IWUGO,
+				    test_ctx->debug.debug_root,
+				    NULL,
+				    &smem_rpc_test_ops);
+
+	test_ctx->debug.all_channels_test =
+		debugfs_create_file("150_all_channels_test",
+				    S_IRUGO | S_IWUGO,
+				    test_ctx->debug.debug_root,
+				    NULL,
+				    &all_channels_test_ops);
+
+	test_ctx->debug.host_sender_no_lp_diag_test =
+		debugfs_create_file("160_host_sender_no_lp_diag_test",
+				    S_IRUGO | S_IWUGO,
+				    test_ctx->debug.debug_root,
+				    NULL,
+				    &host_sender_no_lp_diag_test_ops);
+
+	test_ctx->debug.host_sender_no_lp_diag_rpc_ciq_test =
+		debugfs_create_file("170_host_sender_no_lp_diag_rpc_ciq_test",
+				     S_IRUGO | S_IWUGO,
+				     test_ctx->debug.debug_root,
+				     NULL,
+				     &host_sender_no_lp_diag_rpc_ciq_test_ops);
+
+	test_ctx->debug.rmnet_small_packets_test =
+		debugfs_create_file("180_rmnet_small_packets_test",
+				     S_IRUGO | S_IWUGO,
+				     test_ctx->debug.debug_root,
+				     NULL,
+				     &rmnet_small_packets_test_ops);
+
+	test_ctx->debug.rmnet_rtt_test =
+		debugfs_create_file("190_rmnet_rtt_test",
+				     S_IRUGO | S_IWUGO,
+				     test_ctx->debug.debug_root,
+				     NULL,
+				     &rmnet_rtt_test_ops);
+
+	test_ctx->debug.csvt_rtt_test =
+		debugfs_create_file("191_csvt_rtt_test",
+				     S_IRUGO | S_IWUGO,
+				     test_ctx->debug.debug_root,
+				     NULL,
+				     &csvt_rtt_test_ops);
+
+	test_ctx->debug.modem_reset_rpc_test =
+		debugfs_create_file("220_modem_reset_rpc_test",
+				     S_IRUGO | S_IWUGO,
+				     test_ctx->debug.debug_root,
+				     NULL,
+				     &modem_reset_rpc_test_ops);
+
+	test_ctx->debug.modem_reset_rmnet_test =
+		debugfs_create_file("230_modem_reset_rmnet_test",
+				     S_IRUGO | S_IWUGO,
+				     test_ctx->debug.debug_root,
+				     NULL,
+				     &modem_reset_rmnet_test_ops);
+
+	test_ctx->debug.modem_reset_channels_4bit_dev_test =
+		debugfs_create_file("240_modem_reset_channels_4bit_dev_test",
+				     S_IRUGO | S_IWUGO,
+				     test_ctx->debug.debug_root,
+				     NULL,
+				     &modem_reset_channels_4bit_dev_test_ops);
+
+	test_ctx->debug.modem_reset_channels_8bit_dev_test =
+		debugfs_create_file("250_modem_reset_channels_8bit_dev_test",
+				     S_IRUGO | S_IWUGO,
+				     test_ctx->debug.debug_root,
+				     NULL,
+				     &modem_reset_channels_8bit_dev_test_ops);
+
+	test_ctx->debug.modem_reset_all_channels_test =
+		debugfs_create_file("260_modem_reset_all_channels_test",
+				     S_IRUGO | S_IWUGO,
+				     test_ctx->debug.debug_root,
+				     NULL,
+				     &modem_reset_all_channels_test_ops);
+
+	test_ctx->debug.open_close_test =
+		debugfs_create_file("270_open_close_test",
+				     S_IRUGO | S_IWUGO,
+				     test_ctx->debug.debug_root,
+				     NULL,
+				     &open_close_test_ops);
+
+	test_ctx->debug.open_close_dun_rmnet_test =
+		debugfs_create_file("271_open_close_dun_rmnet_test",
+				     S_IRUGO | S_IWUGO,
+				     test_ctx->debug.debug_root,
+				     NULL,
+				     &open_close_dun_rmnet_test_ops);
+
+	test_ctx->debug.close_chan_lpm_test =
+		debugfs_create_file("280_close_chan_lpm_test",
+				     S_IRUGO | S_IWUGO,
+				     test_ctx->debug.debug_root,
+				     NULL,
+				     &close_chan_lpm_test_ops);
+
+	test_ctx->debug.lpm_test_client_wakes_host_test =
+		debugfs_create_file("600_lpm_test_client_wakes_host_test",
+				     S_IRUGO | S_IWUGO,
+				     test_ctx->debug.debug_root,
+				     NULL,
+				     &lpm_test_client_wakes_host_test_ops);
+
+	test_ctx->debug.lpm_test_host_wakes_client_test =
+		debugfs_create_file("610_lpm_test_host_wakes_client_test",
+				     S_IRUGO | S_IWUGO,
+				     test_ctx->debug.debug_root,
+				     NULL,
+				     &lpm_test_host_wakes_client_test_ops);
+
+	test_ctx->debug.lpm_test_random_single_channel_test =
+		debugfs_create_file("620_lpm_test_random_single_channel_test",
+				     S_IRUGO | S_IWUGO,
+				     test_ctx->debug.debug_root,
+				     NULL,
+				     &lpm_test_random_single_channel_test_ops);
+
+	test_ctx->debug.lpm_test_random_multi_channel_test =
+		debugfs_create_file("630_lpm_test_random_multi_channel_test",
+				     S_IRUGO | S_IWUGO,
+				     test_ctx->debug.debug_root,
+				     NULL,
+				     &lpm_test_random_multi_channel_test_ops);
 
 	if ((!test_ctx->debug.debug_dun_throughput) &&
 	    (!test_ctx->debug.debug_rmnt_throughput)) {
@@ -352,10 +2702,108 @@ static int channel_name_to_id(char *name)
 	else if (!strncmp(name, "SDIO_SMEM_TEST",
 			  strnlen("SDIO_SMEM_TEST", TEST_CH_NAME_SIZE)))
 		return SDIO_SMEM;
+	else if (!strncmp(name, "SDIO_CIQ_TEST",
+			  strnlen("SDIO_CIQ_TEST", TEST_CH_NAME_SIZE)))
+		return SDIO_CIQ;
+	else if (!strncmp(name, "SDIO_CSVT_TEST",
+			  strnlen("SDIO_CSVT_TEST", TEST_CH_NAME_SIZE)))
+		return SDIO_CSVT;
 	else
 		return SDIO_MAX_CHANNELS;
 
 	return SDIO_MAX_CHANNELS;
+}
+
+/**
+ * Allocate and add SDIO_SMEM platform device
+ */
+#ifdef CONFIG_MSM_SDIO_SMEM
+static int add_sdio_smem(void)
+{
+	int ret = 0;
+
+	test_ctx->smem_pdev = platform_device_alloc("SDIO_SMEM", -1);
+	ret = platform_device_add(test_ctx->smem_pdev);
+	if (ret) {
+		pr_err(TEST_MODULE_NAME ": platform_device_add failed, "
+				   "ret=%d\n", ret);
+		return ret;
+	}
+	return 0;
+}
+#endif
+
+static int open_sdio_ch(struct test_channel *tch)
+{
+	int ret = 0;
+
+	if (!tch) {
+		pr_err(TEST_MODULE_NAME ": %s NULL tch\n", __func__);
+		return -EINVAL;
+	}
+
+	if (!tch->ch_ready) {
+		TEST_DBG(TEST_MODULE_NAME ":openning channel %s\n",
+			tch->name);
+		if (tch->ch_id == SDIO_SMEM) {
+#ifdef CONFIG_MSM_SDIO_SMEM
+			if (!test_ctx->smem_pdev)
+				ret = add_sdio_smem();
+			else
+				ret = sdio_smem_open(test_ctx->sdio_smem);
+			if (ret) {
+				pr_err(TEST_MODULE_NAME
+					":openning channel %s failed\n",
+				tch->name);
+				tch->ch_ready = false;
+				return -EINVAL;
+			}
+#endif
+		} else {
+			tch->ch_ready = true;
+			ret = sdio_open(tch->name , &tch->ch, tch,
+					notify);
+			if (ret) {
+				pr_err(TEST_MODULE_NAME
+					":openning channel %s failed\n",
+				tch->name);
+				tch->ch_ready = false;
+				return -EINVAL;
+			}
+		}
+	}
+	return ret;
+}
+
+static int close_sdio_ch(struct test_channel *tch)
+{
+	int ret = 0;
+
+	if (!tch) {
+		pr_err(TEST_MODULE_NAME ": %s NULL tch\n", __func__);
+		return -EINVAL;
+	}
+
+	if (tch->ch_id == SDIO_SMEM) {
+#ifdef CONFIG_MSM_SDIO_SMEM
+		TEST_DBG(TEST_MODULE_NAME":%s closing channel %s",
+		       __func__, tch->name);
+		ret = sdio_smem_unregister_client();
+		test_ctx->smem_counter = 0;
+#endif
+	} else {
+		ret = sdio_close(tch->ch);
+	}
+
+	if (ret) {
+		pr_err(TEST_MODULE_NAME":%s close channel %s"
+				" failed\n", __func__, tch->name);
+	} else {
+		TEST_DBG(TEST_MODULE_NAME":%s close channel %s"
+				" success\n", __func__, tch->name);
+		tch->ch_ready = false;
+	}
+	return ret;
 }
 
 /**
@@ -607,7 +3055,8 @@ static int wait_for_result_msg(struct test_channel *test_ch)
 			continue;
 		} else {
 			pr_info(TEST_MODULE_NAME ": Signature is "
-				"TEST_CONFIG_SIGNATURE as expected\n");
+				"TEST_CONFIG_SIGNATURE as expected for"
+				"channel %s\n", test_ch->name);
 			break;
 		}
 	}
@@ -618,20 +3067,13 @@ exit_err:
 	return 0;
 }
 
-static int check_random_lpm_test_array(struct sdio_test_device *test_dev)
+static void print_random_lpm_test_array(struct sdio_test_device *test_dev)
 {
-	int i = 0, j = 0;
-	unsigned int delta_ms = 0;
-	int arr_ind = 0;
-	int ret = 1;
-	int notify_counter = 0;
-	int sleep_counter = 0;
-	int wakeup_counter = 0;
-	int lpm_activity_counter = 0;
+	int i;
 
 	if (!test_dev) {
 		pr_err(TEST_MODULE_NAME ": %s - NULL test device\n", __func__);
-		return -ENODEV;
+		return;
 	}
 
 	for (i = 0 ; i < test_dev->next_avail_entry_in_array ; ++i) {
@@ -659,6 +3101,25 @@ static int check_random_lpm_test_array(struct sdio_test_device *test_dev)
 			       test_dev->lpm_arr[i-1].current_ms,
 			       test_dev->lpm_arr[i].read_avail_mask,
 			       test_dev->lpm_arr[i].current_ms);
+
+		udelay(1000);
+	}
+}
+
+static int check_random_lpm_test_array(struct sdio_test_device *test_dev)
+{
+	int i = 0, j = 0;
+	unsigned int delta_ms = 0;
+	int arr_ind = 0;
+	int ret = 0;
+	int notify_counter = 0;
+	int sleep_counter = 0;
+	int wakeup_counter = 0;
+	int lpm_activity_counter = 0;
+
+	if (!test_dev) {
+		pr_err(TEST_MODULE_NAME ": %s - NULL test device\n", __func__);
+		return -ENODEV;
 	}
 
 	for (i = 0; i < test_dev->next_avail_entry_in_array; i++) {
@@ -686,7 +3147,7 @@ static int check_random_lpm_test_array(struct sdio_test_device *test_dev)
 					wakeup_counter++;
 			}
 			if (j == arr_ind) {
-				ret = 1;
+				ret = 0;
 				break;
 			}
 
@@ -704,7 +3165,7 @@ static int check_random_lpm_test_array(struct sdio_test_device *test_dev)
 						"wakeup_counter=%d",
 					       __func__, i, j,
 					       sleep_counter, wakeup_counter);
-					ret = 0;
+					ret = -ENODEV;
 					break;
 				}
 			} else {
@@ -723,7 +3184,7 @@ static int check_random_lpm_test_array(struct sdio_test_device *test_dev)
 						       "=%d",
 						       __func__, i, j,
 						       notify_counter);
-						ret = 0;
+						ret = -ENODEV;
 						break;
 					}
 					lpm_activity_counter++;
@@ -885,10 +3346,13 @@ static int lpm_test_main_task(void *ptr)
 		msleep(60);
 	}
 
+	/*
+	 * if device has still open channels to test, then the test on the
+	 * device is still running but the test on current channel is completed
+	 */
 	if (test_dev->open_channels_counter_to_recv != 0 ||
 	    test_dev->open_channels_counter_to_send != 0) {
 		test_ch->test_completed = 1;
-		test_ch->next_index_in_sent_msg_per_chan = 0;
 		return 0;
 	} else {
 		test_ctx->number_of_active_devices--;
@@ -897,12 +3361,17 @@ static int lpm_test_main_task(void *ptr)
 		if (test_ch->test_type == SDIO_TEST_LPM_RANDOM)
 			host_result = check_random_lpm_test_array(test_dev);
 
-		pr_info(TEST_MODULE_NAME ": %s - host_result=%d. "
-			"device_modem_result=%d",
+		if (host_result ||
+		    !test_dev->modem_result_per_dev ||
+		    test_ctx->runtime_debug)
+			print_random_lpm_test_array(test_dev);
+
+		pr_info(TEST_MODULE_NAME ": %s - host_result=%d.(0 for "
+			"SUCCESS) device_modem_result=%d (1 for SUCCESS)",
 			__func__, host_result, test_dev->modem_result_per_dev);
 
 		test_ch->test_completed = 1;
-		if (test_dev->modem_result_per_dev && host_result) {
+		if (test_dev->modem_result_per_dev && !host_result) {
 			pr_info(TEST_MODULE_NAME ": %s - Random LPM "
 				"TEST_PASSED for device %d of %d\n",
 				__func__,
@@ -919,9 +3388,6 @@ static int lpm_test_main_task(void *ptr)
 				test_ctx->max_number_of_devices);
 			test_dev->final_result_per_dev = 0; /* FAILED */
 		}
-
-		test_dev->next_avail_entry_in_array = 0;
-		test_ch->next_index_in_sent_msg_per_chan = 0;
 
 		check_test_completion();
 
@@ -1006,8 +3472,7 @@ static void lpm_continuous_rand_test(struct test_channel *test_ch)
 		       "thread", __func__);
 	}
 
-	while (test_ch->next_index_in_sent_msg_per_chan <=
-	       test_ch->config_msg.num_packets - 1) {
+	while (1) {
 
 		struct lpm_msg msg;
 		u32 ret = 0;
@@ -1064,6 +3529,14 @@ static void lpm_continuous_rand_test(struct test_channel *test_ch)
 					      next_index_in_sent_msg_per_chan);
 
 			test_ch->next_index_in_sent_msg_per_chan++;
+
+			if (test_ch->next_index_in_sent_msg_per_chan ==
+			    test_ch->config_msg.num_packets) {
+				spin_unlock_irqrestore(
+				    &test_dev->lpm_array_lock,
+				    test_dev->lpm_array_lock_flags);
+				break;
+			}
 
 			spin_unlock_irqrestore(&test_dev->lpm_array_lock,
 					       test_dev->lpm_array_lock_flags);
@@ -1144,8 +3617,6 @@ static void lpm_test_host_waker(struct test_channel *test_ch)
 	lpm_test(test_ch);
 }
 
-static void notify(void *priv, unsigned channel_event);
-
 /**
   * Writes number of packets into test channel
   * @test_ch: test channel control struct
@@ -1200,20 +3671,28 @@ static int write_packet_burst(struct test_channel *test_ch,
 	}
 	return ret;
 }
+
 /**
   * Reads packet from test channel and checks that packet number
   * encoded into the packet is equal to packet_counter
+  * This function is applicable for packet mode channels only
   *
   * @test_ch: test channel
   * @size: expected packet size
   * @packet_counter: number to validate readed packet
   */
-static int read_data_from_channel(struct test_channel *test_ch,
+static int read_data_from_packet_ch(struct test_channel *test_ch,
 				unsigned int size,
 				int packet_counter)
 {
 	u32 read_avail = 0;
 	int ret = 0;
+
+	if (!test_ch || !test_ch->ch) {
+		pr_err(TEST_MODULE_NAME
+				":%s: NULL channel\n", __func__);
+		return -EINVAL;
+	}
 
 	if (!test_ch->ch->is_packet_mode) {
 		pr_err(TEST_MODULE_NAME
@@ -1257,6 +3736,121 @@ static int read_data_from_channel(struct test_channel *test_ch,
 	return 0;
 }
 
+
+/**
+  * Reads packet from test channel and checks that packet number
+  * encoded into the packet is equal to packet_counter
+  * This function is applicable for streaming mode channels only
+  *
+  * @test_ch: test channel
+  * @size: expected packet size
+  * @packet_counter: number to validate readed packet
+  */
+static int read_data_from_stream_ch(struct test_channel *test_ch,
+				unsigned int size,
+				int packet_counter)
+{
+	u32 read_avail = 0;
+	int ret = 0;
+
+	if (!test_ch || !test_ch->ch) {
+		pr_err(TEST_MODULE_NAME
+				":%s: NULL channel\n", __func__);
+		return -EINVAL;
+	}
+
+	if (test_ch->ch->is_packet_mode) {
+		pr_err(TEST_MODULE_NAME
+				":%s:not streaming mode ch %s\n",
+				__func__, test_ch->name);
+		return -EINVAL;
+	}
+	read_avail = sdio_read_avail(test_ch->ch);
+	/* wait for read data ready event */
+	if (read_avail < size) {
+		TEST_DBG(TEST_MODULE_NAME ":%s() wait for rx data on "
+				"chan %s\n", __func__, test_ch->name);
+		wait_event(test_ch->wait_q,
+				atomic_read(&test_ch->rx_notify_count));
+		atomic_dec(&test_ch->rx_notify_count);
+	}
+	read_avail = sdio_read_avail(test_ch->ch);
+	TEST_DBG(TEST_MODULE_NAME ":%s read_avail=%d bytes on chan %s\n",
+			__func__, read_avail, test_ch->name);
+
+	if (read_avail < size) {
+		pr_err(TEST_MODULE_NAME
+				":read_avail size %d for chan %s not as "
+				"expected size %d\n",
+				read_avail, test_ch->name, size);
+		return -EINVAL;
+	}
+
+	ret = sdio_read(test_ch->ch, test_ch->buf, size + A2_HEADER_OVERHEAD);
+	if (ret) {
+		pr_err(TEST_MODULE_NAME ":%s() sdio_read for chan %s (%d)\n",
+				__func__, test_ch->name, -ret);
+		return ret;
+	}
+	if ((test_ch->buf[A2_HEADER_OVERHEAD/4] != packet_counter) &&
+	    (size != 1)) {
+		pr_err(TEST_MODULE_NAME ":Read WRONG DATA"
+				" for chan %s, size=%d, packet_counter=%d\n",
+				test_ch->name, size, packet_counter);
+		print_hex_dump(KERN_INFO, TEST_MODULE_NAME ": rmnet:",
+				0, 32, 2,
+				(void *)test_ch->buf,
+				size + A2_HEADER_OVERHEAD, false);
+		return -EINVAL;
+	}
+	return 0;
+}
+
+/**
+ *   Test close channel feature for SDIO_SMEM channel:
+ *   close && re-open the SDIO_SMEM channel.
+ */
+#ifdef CONFIG_MSM_SDIO_SMEM
+static void open_close_smem_test(struct test_channel *test_ch)
+{
+	int i = 0;
+	int ret = 0;
+
+	pr_info(TEST_MODULE_NAME ":%s\n", __func__);
+
+	for (i = 0; i < 100 ; ++i) {
+		ret = close_sdio_ch(test_ch);
+		if (ret) {
+			pr_err(TEST_MODULE_NAME ":%s close_sdio_ch for ch %s"
+						" failed\n",
+						__func__, test_ch->name);
+			goto exit_err;
+		}
+		ret = open_sdio_ch(test_ch);
+		if (ret) {
+			pr_err(TEST_MODULE_NAME ":%s open_sdio_ch for ch %s "
+						" failed\n",
+						__func__, test_ch->name);
+			goto exit_err;
+		}
+	}
+
+	pr_info(TEST_MODULE_NAME ":%s TEST PASS for chan %s.\n", __func__,
+			test_ch->name);
+	test_ch->test_completed = 1;
+	test_ch->test_result = TEST_PASSED;
+	check_test_completion();
+	return;
+exit_err:
+	pr_info(TEST_MODULE_NAME ":%s TEST FAIL for chan %s.\n", __func__,
+			test_ch->name);
+	test_ch->test_completed = 1;
+	test_ch->test_result = TEST_FAILED;
+	check_test_completion();
+	return;
+}
+#endif
+
 /**
  *   Test close channel feature:
  *   1. write random packet number into channel
@@ -1273,12 +3867,22 @@ static void open_close_test(struct test_channel *test_ch)
 	int ret = 0;
 	u32 read_avail = 0;
 	int total_packet_count = 0;
-	int size = test_ch->packet_length;
-	u16 *buf16 = (u16 *) test_ch->buf;
+	int size = 0;
+	u16 *buf16 = NULL;
 	int i;
 	int max_packet_count = 0;
 	unsigned int random_num = 0;
-	int curr_burst_size = test_ch->max_burst_size;
+	int curr_burst_size = 0;
+
+	if (!test_ch || !test_ch->ch) {
+		pr_err(TEST_MODULE_NAME ":%s NULL channel\n",
+				__func__);
+		return;
+	}
+
+	curr_burst_size = test_ch->max_burst_size;
+	size = test_ch->packet_length;
+	buf16 = (u16 *) test_ch->buf;
 
 	/* the test sends configured number of packets in
 	   2 portions: first without reading between write bursts,
@@ -1319,14 +3923,20 @@ static void open_close_test(struct test_channel *test_ch)
 			ret = write_packet_burst(test_ch, curr_burst_size);
 			if (ret) {
 				pr_err(TEST_MODULE_NAME ":%s write burst "
-						"failed (%d), ch %s\n",
-						__func__, ret, test_ch->name);
+				       "failed (%d), ch %s\n",
+				       __func__, ret, test_ch->name);
 				goto exit_err;
 			}
 			if (i > 0) {
 				/* read from channel */
-				ret = read_data_from_channel(test_ch, size,
-						total_packet_count);
+				if (test_ch->ch->is_packet_mode)
+					ret = read_data_from_packet_ch(test_ch,
+							size,
+							total_packet_count);
+				else
+					ret = read_data_from_stream_ch(test_ch,
+							size,
+							total_packet_count);
 				if (ret) {
 					pr_err(TEST_MODULE_NAME ":%s read"
 							" failed:%d, chan %s\n",
@@ -1337,7 +3947,7 @@ static void open_close_test(struct test_channel *test_ch)
 			}
 			TEST_DBG(TEST_MODULE_NAME ":%s before close, ch %s\n",
 					__func__, test_ch->name);
-			ret = sdio_close(test_ch->ch);
+			ret = close_sdio_ch(test_ch);
 			if (ret) {
 				pr_err(TEST_MODULE_NAME":%s close channel %s"
 						" failed (%d)\n",
@@ -1354,8 +3964,7 @@ static void open_close_test(struct test_channel *test_ch)
 			}
 			TEST_DBG(TEST_MODULE_NAME ":%s before open, ch %s\n",
 					__func__, test_ch->name);
-			ret = sdio_open(test_ch->name , &test_ch->ch,
-					test_ch, notify);
+			ret = open_sdio_ch(test_ch);
 			if (ret) {
 				pr_err(TEST_MODULE_NAME":%s open channel %s"
 						" failed (%d)\n",
@@ -1660,10 +4269,17 @@ static void a2_performance_test(struct test_channel *test_ch)
 		   total_bytes , (int) time_msec, test_ch->name);
 
 	if (!test_ch->random_packet_size) {
-		throughput = (total_bytes / time_msec) * 8 / 1000;
-		pr_err(TEST_MODULE_NAME ":Performance = %d Mbit/sec for "
-					"chan %s\n",
-		       throughput, test_ch->name);
+		if (time_msec) {
+			throughput = (total_bytes / time_msec) * 8 / 1000;
+			pr_err(TEST_MODULE_NAME ": %s - Performance = "
+			       "%d Mbit/sec for chan %s\n",
+			       __func__, throughput, test_ch->name);
+		} else {
+			pr_err(TEST_MODULE_NAME ": %s - time_msec = 0 Couldn't "
+			       "calculate performence for chan %s\n",
+			   __func__, test_ch->name);
+		}
+
 	}
 
 #ifdef CONFIG_DEBUG_FS
@@ -1707,6 +4323,13 @@ static void rx_cleanup(struct test_channel *test_ch, int *rx_packet_count)
 {
 	int read_avail = 0;
 	int ret = 0;
+	int counter = 0;
+
+	if (!test_ch || !test_ch->ch) {
+		pr_err(TEST_MODULE_NAME ":%s NULL channel\n",
+				__func__);
+		return;
+	}
 
 	read_avail = sdio_read_avail(test_ch->ch);
 	TEST_DBG(TEST_MODULE_NAME ":channel %s, read_avail=%d\n",
@@ -1718,7 +4341,7 @@ static void rx_cleanup(struct test_channel *test_ch, int *rx_packet_count)
 		read_avail = sdio_read_avail(test_ch->ch);
 	}
 
-	while (read_avail > 0) {
+	while ((read_avail > 0) && (counter < 10)) {
 		TEST_DBG(TEST_MODULE_NAME ": read_avail=%d for ch %s\n",
 			 read_avail, test_ch->name);
 
@@ -1734,6 +4357,7 @@ static void rx_cleanup(struct test_channel *test_ch, int *rx_packet_count)
 		read_avail = sdio_read_avail(test_ch->ch);
 		if (read_avail == 0) {
 			msleep(1000);
+			counter++;
 			read_avail = sdio_read_avail(test_ch->ch);
 		}
 	}
@@ -1756,10 +4380,10 @@ static void a2_rtt_test(struct test_channel *test_ch)
 	u32 write_avail = 0;
 	int tx_packet_count = 0;
 	int rx_packet_count = 0;
-	u16 *buf16 = (u16 *) test_ch->buf;
+	u16 *buf16 = NULL;
 	int i;
-	int max_packets = test_ch->config_msg.num_packets;
-	u32 packet_size = test_ch->packet_length;
+	int max_packets = 0;
+	u32 packet_size = 0;
 	s64 start_time, end_time;
 	int delta_usec = 0;
 	int time_average = 0;
@@ -1767,6 +4391,24 @@ static void a2_rtt_test(struct test_channel *test_ch)
 	int max_delta_usec = 0;
 	int total_time = 0;
 	int expected_read_size = 0;
+	int delay_ms = 0;
+	int slow_rtt_counter = 0;
+	int read_avail_so_far = 0;
+
+	if (test_ch) {
+		/*
+		 * Cleanup the pending RX data (such as loopback of the
+		 * config msg)
+		 */
+		rx_cleanup(test_ch, &rx_packet_count);
+		rx_packet_count = 0;
+	} else {
+		return;
+	}
+
+	max_packets = test_ch->config_msg.num_packets;
+	packet_size = test_ch->packet_length;
+	buf16 = (u16 *) test_ch->buf;
 
 	for (i = 0; i < packet_size / 2; i++)
 		buf16[i] = (u16) (i & 0xFFFF);
@@ -1774,8 +4416,18 @@ static void a2_rtt_test(struct test_channel *test_ch)
 	pr_info(TEST_MODULE_NAME ": A2 RTT TEST START for chan %s\n",
 		test_ch->name);
 
-	rx_cleanup(test_ch, &rx_packet_count);
-	rx_packet_count = 0;
+	switch (test_ch->ch_id) {
+	case SDIO_RMNT:
+		delay_ms = 100;
+		break;
+	case SDIO_CSVT:
+		delay_ms = 0;
+		break;
+	default:
+		pr_err(TEST_MODULE_NAME ": %s - ch_id invalid.\n",
+		       __func__);
+		return;
+	}
 
 	while (tx_packet_count < max_packets) {
 		if (test_ctx->exit_flag) {
@@ -1784,11 +4436,10 @@ static void a2_rtt_test(struct test_channel *test_ch)
 		}
 		start_time = 0;
 		end_time = 0;
+		read_avail_so_far = 0;
 
-		/* Allow sdio_al to go to sleep to change the read_threshold
-		 *  to 1
-		 */
-		msleep(100);
+		if (delay_ms)
+			msleep(delay_ms);
 
 		/* wait for data ready event */
 		write_avail = sdio_write_avail(test_ch->ch);
@@ -1828,37 +4479,52 @@ static void a2_rtt_test(struct test_channel *test_ch)
 
 		expected_read_size = packet_size + A2_HEADER_OVERHEAD;
 
-		read_avail = sdio_read_avail(test_ch->ch);
-		TEST_DBG(TEST_MODULE_NAME ":channel %s, read_avail=%d\n",
-			 test_ch->name, read_avail);
-		while (read_avail < expected_read_size) {
-			wait_event(test_ch->wait_q,
-				   atomic_read(&test_ch->rx_notify_count));
-			atomic_dec(&test_ch->rx_notify_count);
-			read_avail = sdio_read_avail(test_ch->ch);
-		}
+		while (read_avail_so_far < expected_read_size) {
 
-		if (read_avail >= expected_read_size) {
-			pr_debug(TEST_MODULE_NAME ":read_avail=%d for ch %s.\n",
-				 read_avail, test_ch->name);
+			read_avail = sdio_read_avail(test_ch->ch);
+
+			if (!read_avail) {
+				wait_event(test_ch->wait_q,
+					   atomic_read(&test_ch->
+						       rx_notify_count));
+
+				atomic_dec(&test_ch->rx_notify_count);
+				continue;
+			}
+
+			read_avail_so_far += read_avail;
+
+			if (read_avail_so_far > expected_read_size) {
+				pr_err(TEST_MODULE_NAME ": %s - Invalid "
+				       "read_avail(%d)  read_avail_so_far(%d) "
+				       "can't be larger than "
+				       "expected_read_size(%d).",
+				       __func__,
+				       read_avail,
+				       read_avail_so_far,
+				       expected_read_size);
+				goto exit_err;
+			}
+
+			/*
+			 * must read entire pending bytes, so later, we will
+			 * get a notification when more data arrives
+			 */
 			ret = sdio_read(test_ch->ch, test_ch->buf,
-					expected_read_size);
+					read_avail);
+
 			if (ret) {
 				pr_info(TEST_MODULE_NAME ": sdio_read size %d "
 					" err=%d for chan %s\n",
-					expected_read_size, -ret,
+					read_avail, -ret,
 					test_ch->name);
 				goto exit_err;
 			}
-			end_time = ktime_to_us(ktime_get());
-			rx_packet_count++;
-			test_ch->rx_bytes += expected_read_size;
-		} else {
-				pr_info(TEST_MODULE_NAME ": Invalid read_avail "
-							 "%d for chan %s\n",
-					read_avail, test_ch->name);
-				goto exit_err;
 		}
+
+		end_time = ktime_to_us(ktime_get());
+		rx_packet_count++;
+		test_ch->rx_bytes += expected_read_size;
 
 		delta_usec = (int)(end_time - start_time);
 		total_time += delta_usec;
@@ -1867,24 +4533,47 @@ static void a2_rtt_test(struct test_channel *test_ch)
 		if (delta_usec > max_delta_usec)
 				max_delta_usec = delta_usec;
 
+		/* checking the RTT per channel criteria */
+		if (delta_usec > MAX_AVG_RTT_TIME_USEC) {
+			pr_err(TEST_MODULE_NAME ": %s - "
+			       "msg # %d - rtt time (%d usec) is "
+			       "longer than %d usec\n",
+			       __func__,
+			       tx_packet_count,
+			       delta_usec,
+			       MAX_AVG_RTT_TIME_USEC);
+			slow_rtt_counter++;
+		}
+
 		TEST_DBG(TEST_MODULE_NAME
 			 ":RTT time=%d for packet #%d for chan %s\n",
 			 delta_usec, tx_packet_count, test_ch->name);
-
 	} /* while (tx_packet_count < max_packets ) */
 
+	pr_info(TEST_MODULE_NAME ": %s - tx_packet_count = %d\n",
+		__func__, tx_packet_count);
 
-	pr_info(TEST_MODULE_NAME ":total rx bytes = 0x%x , rx_packet#=%d for"
-				 " chan %s.\n",
-		test_ch->rx_bytes, rx_packet_count, test_ch->name);
-	pr_info(TEST_MODULE_NAME ":total tx bytes = 0x%x , tx_packet#=%d"
-				 " for chan %s.\n",
-		test_ch->tx_bytes, tx_packet_count, test_ch->name);
+	pr_info(TEST_MODULE_NAME ": %s - total rx bytes = 0x%x, "
+		"rx_packet# = %d for chan %s.\n",
+		__func__, test_ch->rx_bytes, rx_packet_count, test_ch->name);
 
-	time_average = total_time / tx_packet_count;
+	pr_info(TEST_MODULE_NAME ": %s - total tx bytes = 0x%x, "
+		"tx_packet# = %d for chan %s.\n",
+		__func__, test_ch->tx_bytes, tx_packet_count, test_ch->name);
 
-	pr_info(TEST_MODULE_NAME ":Average RTT time = %d for chan %s\n",
+	pr_info(TEST_MODULE_NAME ": %s - slow_rtt_counter = %d for "
+		"chan %s.\n",
+		__func__, slow_rtt_counter, test_ch->name);
+
+	if (tx_packet_count) {
+		time_average = total_time / tx_packet_count;
+		pr_info(TEST_MODULE_NAME ":Average RTT time = %d for chan %s\n",
 		   time_average, test_ch->name);
+	} else {
+		pr_err(TEST_MODULE_NAME ": %s - tx_packet_count=0. couldn't "
+		       "calculate average rtt time", __func__);
+	}
+
 	pr_info(TEST_MODULE_NAME ":MIN RTT time = %d for chan %s\n",
 		   min_delta_usec, test_ch->name);
 	pr_info(TEST_MODULE_NAME ":MAX RTT time = %d for chan %s\n",
@@ -1892,6 +4581,17 @@ static void a2_rtt_test(struct test_channel *test_ch)
 
 	pr_info(TEST_MODULE_NAME ": A2 RTT TEST END for chan %s.\n",
 	       test_ch->name);
+
+	if (ret)
+		goto exit_err;
+
+	if (time_average == 0 || time_average > MAX_AVG_RTT_TIME_USEC) {
+		pr_err(TEST_MODULE_NAME ": %s - average_time = %d. Invalid "
+		       "value",
+		       __func__, time_average);
+		goto exit_err;
+
+	}
 
 	pr_info(TEST_MODULE_NAME ": TEST PASS for chan %s\n", test_ch->name);
 	test_ch->test_completed = 1;
@@ -1907,6 +4607,284 @@ exit_err:
 	return;
 }
 
+/**
+ * Process Rx Data - Helper for A2 Validation Test
+ * @test_ch(in/out) : Test channel that contains Rx data buffer to process.
+ *
+ * @rx_unprocessed_bytes(in) : Number of bytes to process in the buffer.
+ *
+ * @rx_process_packet_state(in/out) :
+ * Current processing state (used to identify what to process
+ * next in a partial packet)
+ *
+ * @rx_packet_size(in/out) :
+ * Number of bytes remaining in the packet to be processed.
+ *
+ * @rx_packet_count(in/out) :
+ * Number of packets processed.
+ */
+static int process_rx_data(struct test_channel *test_ch,
+			   u32 rx_unprocessed_bytes,
+			   int *rx_process_packet_state,
+			   u16 *rx_packet_size,
+			   int *rx_packet_count)
+{
+	u8 *buf = (u8 *)test_ch->buf;
+	int eop = 0;
+	int i = 0;
+	int ret = 0;
+	u32 *ptr = 0;
+	u16 size = 0;
+
+	/* process rx data */
+	while (rx_unprocessed_bytes) {
+		TEST_DBG(TEST_MODULE_NAME ": unprocessed bytes : %u\n",
+			rx_unprocessed_bytes);
+
+		switch (*rx_process_packet_state) {
+		case RX_PROCESS_PACKET_INIT:
+			/* process the A2 header */
+			TEST_DBG(TEST_MODULE_NAME ": "
+				"RX_PROCESS_PACKET_INIT\n");
+			*rx_process_packet_state = RX_PROCESS_PACKET_INIT;
+			if (rx_unprocessed_bytes < 4)
+				break;
+
+			i += 4;
+			rx_unprocessed_bytes -= 4;
+
+		case RX_PROCESS_A2_HEADER:
+			/* process the rest of A2 header */
+			TEST_DBG(TEST_MODULE_NAME ": RX_PROCESS_A2_HEADER\n");
+			*rx_process_packet_state = RX_PROCESS_A2_HEADER;
+			if (rx_unprocessed_bytes < 4)
+				break;
+
+			ptr = (u32 *)&buf[i];
+			/*
+			 * upper 2 bytes of the last 4 bytes of A2 header
+			 * contains the size of the packet
+			 */
+			*rx_packet_size = *ptr >> 0x10;
+
+			i += 4;
+			rx_unprocessed_bytes -= 4;
+
+		case RX_PROCESS_PACKET_DATA:
+			/* process the2_2_ packet data */
+			TEST_DBG(TEST_MODULE_NAME ": RX_PROCESS_PACKET_DATA "
+				 "- packet size - %u\n", *rx_packet_size);
+			*rx_process_packet_state = RX_PROCESS_PACKET_DATA;
+
+			size = *rx_packet_size;
+			if (*rx_packet_size <= rx_unprocessed_bytes) {
+				eop = *rx_packet_size;
+				*rx_packet_size = 0;
+			} else {
+				eop = rx_unprocessed_bytes;
+				*rx_packet_size = *rx_packet_size -
+						  rx_unprocessed_bytes;
+			}
+
+			/* no more bytes available to process */
+			if (!eop)
+				break;
+			/*
+			 * end of packet is starting from
+			 * the current position
+			 */
+			eop = eop + i;
+			TEST_DBG(TEST_MODULE_NAME ": size - %u, "
+				 "packet size - %u eop - %d\n",
+				 size, *rx_packet_size, eop);
+
+			/* validate the data */
+			for (; i < eop; i++) {
+				if (buf[i] != (test_ch->rx_bytes % 256)) {
+					pr_err(TEST_MODULE_NAME ": "
+					       "Corrupt data. buf:%u, "
+					       "data:%u\n", buf[i],
+					       test_ch->rx_bytes % 256);
+					ret = -EINVAL;
+					goto err;
+				}
+				rx_unprocessed_bytes--;
+				test_ch->rx_bytes++;
+			}
+
+			/* have more data to be processed */
+			if (*rx_packet_size)
+				break;
+
+			/*
+			 * A2 sends data in 4 byte alignment,
+			 * skip the padding
+			 */
+			if (size % 4) {
+				i += 4 - (size % 4);
+				rx_unprocessed_bytes -= 4 - (size % 4);
+			}
+			*rx_packet_count = *rx_packet_count + 1;
+
+			/* re init the state to process new packet */
+			*rx_process_packet_state = RX_PROCESS_PACKET_INIT;
+			break;
+		default:
+			pr_err(TEST_MODULE_NAME ": Invalid case: %d\n",
+			       *rx_process_packet_state);
+			ret = -EINVAL;
+			goto err;
+		}
+		TEST_DBG(TEST_MODULE_NAME ": Continue processing "
+			"if more data is available\n");
+	}
+
+err:
+	return ret;
+}
+
+/**
+ * A2 Validation Test
+ * Send packets and validate the returned packets.
+ * Transmit one packet at a time, while process multiple rx
+ * packets in a single transaction.
+ * A transaction is of size min(random number, write_avail).
+ * A packet consists of a min of 1 byte to channel supported max.
+ */
+static void a2_validation_test(struct test_channel *test_ch)
+{
+	int ret = 0 ;
+	u32 read_avail = 0;
+	u32 write_avail = 0;
+	int tx_packet_count = 0;
+	int rx_packet_count = 0;
+	int initial_rx_packet_count = 0;
+	u32 size = 0;
+	u8 *buf8 = (u8 *)test_ch->buf;
+	int i = 0;
+	int max_packets = test_ch->config_msg.num_packets;
+	u16 tx_packet_size = 0;
+	u16 rx_packet_size = 0;
+	u32 random_num = 0;
+	int rx_process_packet_state = RX_PROCESS_PACKET_INIT;
+
+	pr_info(TEST_MODULE_NAME ": A2 VALIDATION TEST START for chan %s\n",
+		test_ch->name);
+
+	/* Wait for the initial rx messages before starting the test. */
+	rx_cleanup(test_ch, &initial_rx_packet_count);
+
+	test_ch->tx_bytes = 0;
+	test_ch->rx_bytes = 0;
+
+	/* Continue till we have transmitted and received all packets */
+	while ((tx_packet_count < max_packets) ||
+	       (rx_packet_count < max_packets)) {
+
+		if (test_ctx->exit_flag) {
+			pr_info(TEST_MODULE_NAME ":Exit Test.\n");
+			return;
+		}
+
+		random_num = get_random_int();
+		size = (random_num % test_ch->packet_length) + 1;
+		TEST_DBG(TEST_MODULE_NAME ": Random tx packet size =%u", size);
+
+		/*
+		 * wait for data ready event
+		 * use a func to avoid compiler optimizations
+		 */
+		write_avail = sdio_write_avail(test_ch->ch);
+		read_avail = sdio_read_avail(test_ch->ch);
+		TEST_DBG(TEST_MODULE_NAME ": write_avail=%d, "
+			"read_avail=%d for chan %s\n",
+			write_avail, read_avail, test_ch->name);
+
+		if ((write_avail == 0) && (read_avail == 0)) {
+			wait_event(test_ch->wait_q,
+				   atomic_read(&test_ch->any_notify_count));
+			atomic_set(&test_ch->any_notify_count, 0);
+		}
+
+		/* Transmit data */
+		write_avail = sdio_write_avail(test_ch->ch);
+		if ((tx_packet_count < max_packets) && (write_avail > 0)) {
+			tx_packet_size = min(size, write_avail) ;
+			TEST_DBG(TEST_MODULE_NAME ": tx size = %u, "
+				"write_avail = %u tx_packet# = %d\n",
+				tx_packet_size, write_avail,
+				tx_packet_count);
+			memset(test_ch->buf, 0, test_ch->buf_size);
+			/* populate the buffer */
+			for (i = 0; i < tx_packet_size; i++) {
+				buf8[i] = test_ch->tx_bytes % 256;
+				test_ch->tx_bytes++;
+			}
+
+			ret = sdio_write(test_ch->ch, test_ch->buf,
+					  tx_packet_size);
+			if (ret) {
+				pr_err(TEST_MODULE_NAME ":sdio_write err=%d"
+					" for chan %s\n",
+					-ret, test_ch->name);
+				goto exit_err;
+			}
+			tx_packet_count++;
+		}
+
+		/* Receive data */
+		read_avail = sdio_read_avail(test_ch->ch);
+		if (read_avail > 0) {
+			TEST_DBG(TEST_MODULE_NAME ": rx size = %u, "
+				"rx_packet#=%d.\n",
+				read_avail, rx_packet_count);
+			memset(test_ch->buf, 0, test_ch->buf_size);
+
+			ret = sdio_read(test_ch->ch, test_ch->buf,
+					read_avail);
+			if (ret) {
+				pr_err(TEST_MODULE_NAME ": sdio_read "
+					"size %d err=%d for chan %s\n",
+					size, -ret, test_ch->name);
+				goto exit_err;
+			}
+
+			/* Process data */
+			ret = process_rx_data(test_ch, read_avail,
+					      &rx_process_packet_state,
+					      &rx_packet_size,
+					      &rx_packet_count);
+
+			if (ret != 0)
+				goto exit_err;
+		}
+		TEST_DBG(TEST_MODULE_NAME ": Continue loop ...\n");
+	}
+
+	if (test_ch->tx_bytes != test_ch->rx_bytes) {
+		pr_err(TEST_MODULE_NAME ": Total number of bytes "
+			"transmitted (%u) does not match the total "
+			"number of bytes received (%u).", test_ch->tx_bytes,
+			test_ch->rx_bytes);
+		goto exit_err;
+	}
+
+	pr_info(TEST_MODULE_NAME ": A2 VALIDATION TEST END for chan %s.\n",
+		test_ch->name);
+
+	pr_info(TEST_MODULE_NAME ": TEST PASS for chan %s\n", test_ch->name);
+	test_ch->test_completed = 1;
+	test_ch->test_result = TEST_PASSED;
+	check_test_completion();
+	return;
+
+exit_err:
+	pr_info(TEST_MODULE_NAME ": TEST FAIL for chan %s\n", test_ch->name);
+	test_ch->test_completed = 1;
+	test_ch->test_result = TEST_FAILED;
+	check_test_completion();
+	return;
+}
 
 /**
  * sender No loopback Test
@@ -2160,8 +5138,6 @@ static void modem_reset_test(struct test_channel *test_ch)
 
 	} /* while (tx_packet_count < max_packets ) */
 
-	rx_cleanup(test_ch, &rx_packet_count);
-
 	pr_info(TEST_MODULE_NAME ":total rx bytes = 0x%x , rx_packet#=%d for"
 				 " chan %s.\n",
 		test_ch->rx_bytes, rx_packet_count, test_ch->name);
@@ -2225,10 +5201,14 @@ static void worker(struct work_struct *work)
 		a2_rtt_test(test_ch);
 		break;
 	case SDIO_TEST_CLOSE_CHANNEL:
-		open_close_test(test_ch);
+		if (test_ch->ch_id != SDIO_SMEM)
+			open_close_test(test_ch);
 		break;
 	case SDIO_TEST_MODEM_RESET:
 		modem_reset_test(test_ch);
+		break;
+	case SDIO_TEST_A2_VALIDATION:
+		a2_validation_test(test_ch);
 		break;
 	default:
 		pr_err(TEST_MODULE_NAME ":Bad Test type = %d.\n",
@@ -2308,50 +5288,102 @@ static void notify(void *priv, unsigned channel_event)
 static int sdio_smem_test_cb(int event)
 {
 	struct test_channel *tch = test_ctx->test_ch_arr[SDIO_SMEM];
+	int i;
+	int *smem_buf = (int *)test_ctx->smem_buf;
+	uint32_t val = 0;
+	int ret = 0;
+
 	pr_debug(TEST_MODULE_NAME ":%s: Received event %d\n", __func__, event);
+
+	if (!tch) {
+		pr_err(TEST_MODULE_NAME ": %s NULL tch\n", __func__);
+		return -EINVAL;
+	}
 
 	switch (event) {
 	case SDIO_SMEM_EVENT_READ_DONE:
 		tch->rx_bytes += SMEM_MAX_XFER_SIZE;
+		for (i = 0; i < SMEM_MAX_XFER_SIZE;) {
+			val = (int)*smem_buf;
+			if ((val != test_ctx->smem_counter) && tch->is_used) {
+				pr_err(TEST_MODULE_NAME ":%s: Invalid value %d "
+				"expected %d in smem arr",
+				__func__, val, test_ctx->smem_counter);
+				pr_err(TEST_MODULE_NAME ":SMEM test FAILED\n");
+				tch->test_completed = 1;
+				tch->test_result = TEST_FAILED;
+				check_test_completion();
+				ret = -EINVAL;
+				goto exit;
+			}
+			i += 4;
+			smem_buf++;
+			test_ctx->smem_counter++;
+		}
 		if (tch->rx_bytes >= 40000000) {
-			if (!tch->test_completed) {
+			if ((!tch->test_completed) && tch->is_used) {
 				pr_info(TEST_MODULE_NAME ":SMEM test PASSED\n");
 				tch->test_completed = 1;
 				tch->test_result = TEST_PASSED;
 				check_test_completion();
 			}
-
 		}
 		break;
 	case SDIO_SMEM_EVENT_READ_ERR:
-		pr_err(TEST_MODULE_NAME ":Read overflow, SMEM test FAILED\n");
-		tch->test_completed = 1;
-		tch->test_result = TEST_FAILED;
-		check_test_completion();
-		return -EIO;
+		if (tch->is_used) {
+			pr_err(TEST_MODULE_NAME ":Read overflow, "
+						"SMEM test FAILED\n");
+			tch->test_completed = 1;
+			tch->test_result = TEST_FAILED;
+			ret = -EIO;
+		}
+		break;
 	default:
-		pr_err(TEST_MODULE_NAME ":Unhandled event\n");
-		return -EINVAL;
+		if (tch->is_used) {
+			pr_err(TEST_MODULE_NAME ":Unhandled event %d\n", event);
+			ret = -EINVAL;
+		}
+		break;
 	}
-	return 0;
+exit:
+	return ret;
 }
 
-static int sdio_smem_test_probe(struct platform_device *pdev)
+static int sdio_smem_open(struct sdio_smem_client *sdio_smem)
 {
 	int ret = 0;
 
-	test_ctx->sdio_smem = container_of(pdev, struct sdio_smem_client,
-					   plat_dev);
+	if (!sdio_smem) {
+		pr_info(TEST_MODULE_NAME "%s: NULL sdio_smem_client\n",
+			__func__);
+		return -EINVAL;
+	}
 
-	test_ctx->sdio_smem->buf = test_ctx->smem_buf;
-	test_ctx->sdio_smem->size = SMEM_MAX_XFER_SIZE;
-	test_ctx->sdio_smem->cb_func = sdio_smem_test_cb;
+	if (test_ctx->test_ch_arr[SDIO_SMEM]->ch_ready) {
+		pr_info(TEST_MODULE_NAME "%s: SDIO_SMEM channel is already opened\n",
+			__func__);
+		return 0;
+	}
+
+	test_ctx->test_ch_arr[SDIO_SMEM]->ch_ready = 1;
+	sdio_smem->buf = test_ctx->smem_buf;
+	sdio_smem->size = SMEM_MAX_XFER_SIZE;
+	sdio_smem->cb_func = sdio_smem_test_cb;
 	ret = sdio_smem_register_client();
 	if (ret)
 		pr_info(TEST_MODULE_NAME "%s: Error (%d) registering sdio_smem "
 					 "test client\n",
 			__func__, ret);
+
 	return ret;
+}
+
+static int sdio_smem_test_probe(struct platform_device *pdev)
+{
+	test_ctx->sdio_smem = container_of(pdev, struct sdio_smem_client,
+					   plat_dev);
+
+	return sdio_smem_open(test_ctx->sdio_smem);
 }
 
 static struct platform_driver sdio_smem_client_drv = {
@@ -2362,12 +5394,6 @@ static struct platform_driver sdio_smem_client_drv = {
 	},
 };
 #endif
-
-
-static void default_sdio_al_test_release(struct device *dev)
-{
-	pr_info(MODULE_NAME ":platform device released.\n");
-}
 
 static void sdio_test_lpm_timeout_handler(unsigned long data)
 {
@@ -2388,14 +5414,14 @@ static void sdio_test_lpm_timer_handler(unsigned long data)
 {
 	struct test_channel *tch = (struct test_channel *)data;
 
+	pr_info(TEST_MODULE_NAME ": %s - LPM TEST Timer Expired after "
+			    "%d ms\n", __func__, tch->timer_interval_ms);
+
 	if (!tch) {
 		pr_err(TEST_MODULE_NAME ": %s - LPM TEST FAILED. "
 		       "tch is NULL\n", __func__);
 		return;
 	}
-
-	pr_info(TEST_MODULE_NAME ": %s - LPM TEST Timer Expired after "
-			    "%d ms\n", __func__, tch->timer_interval_ms);
 
 	if (!tch->ch) {
 		pr_err(TEST_MODULE_NAME ": %s - LPM TEST FAILED. tch->ch "
@@ -2522,6 +5548,7 @@ static int sdio_test_find_dev(struct test_channel *tch)
 			LPM_ARRAY_SIZE;
 		test_dev->modem_result_per_dev = 1;
 		tch->modem_result_per_chan = 0;
+		test_dev->next_avail_entry_in_array = 0;
 
 		spin_lock_init(&test_dev->
 			       lpm_array_lock);
@@ -2653,33 +5680,16 @@ static int test_start(void)
 
 		/* in case there are values left from previous tests */
 		tch->notify_counter_per_chan = 0;
+		tch->next_index_in_sent_msg_per_chan = 0;
 
 		memset(tch->buf, 0x00, tch->buf_size);
 		tch->test_result = TEST_NO_RESULT;
 
 		tch->test_completed = 0;
 
-		if (!tch->ch_ready) {
-			pr_info(TEST_MODULE_NAME ":openning channel %s\n",
-				tch->name);
-			tch->ch_ready = true;
-			if (tch->ch_id == SDIO_SMEM) {
-				test_ctx->smem_pdev.name = "SDIO_SMEM";
-				test_ctx->smem_pdev.dev.release =
-					default_sdio_al_test_release;
-				platform_device_register(&test_ctx->smem_pdev);
-			} else {
-				ret = sdio_open(tch->name , &tch->ch, tch,
-						notify);
-				if (ret) {
-					pr_info(TEST_MODULE_NAME
-						":openning channel %s failed\n",
-					tch->name);
-					tch->ch_ready = false;
-					continue;
-				}
-			}
-		}
+		ret = open_sdio_ch(tch);
+		if (ret)
+			continue;
 
 		if (tch->ch_id != SDIO_SMEM) {
 			ret = sdio_test_find_dev(tch);
@@ -2742,11 +5752,18 @@ static int test_start(void)
 	for (i = 0; i < SDIO_MAX_CHANNELS; i++) {
 		struct test_channel *tch = test_ctx->test_ch_arr[i];
 
-		if ((!tch) || (!tch->is_used) || (!tch->ch_ready) ||
-		    (tch->ch_id == SDIO_SMEM))
+		if ((!tch) || (!tch->is_used) || (!tch->ch_ready))
 			continue;
 
-		queue_work(tch->workqueue, &tch->test_work.work);
+		if (tch->ch_id == SDIO_SMEM) {
+#ifdef CONFIG_MSM_SDIO_SMEM
+			if (tch->test_type == SDIO_TEST_CLOSE_CHANNEL)
+				open_close_smem_test(tch);
+#endif
+		} else {
+			queue_work(tch->workqueue, &tch->test_work.work);
+		}
+
 	}
 
 	pr_info(TEST_MODULE_NAME ": %s - Waiting for the test completion\n",
@@ -2765,23 +5782,19 @@ static int test_start(void)
 
 		if ((!tch) || (!tch->is_used))
 			continue;
-		if ((!tch->ch_ready) ||
-		    (tch->ch_id == SDIO_SMEM) || (!tch->ch->is_packet_mode)) {
+		if (!tch->ch_ready) {
 			tch->is_used = 0;
 			continue;
 		}
-		ret = sdio_close(tch->ch);
-		if (ret) {
-			pr_err(TEST_MODULE_NAME":%s close channel %s"
-					" failed\n", __func__, tch->name);
-		} else {
-			pr_info(TEST_MODULE_NAME":%s close channel %s"
-					" success\n", __func__, tch->name);
-			tch->ch_ready = false;
-		}
+
+		close_sdio_ch(tch);
 		tch->is_used = 0;
 	}
-	return 0;
+
+	if (test_ctx->test_result == TEST_PASSED)
+		return 0;
+	else
+		return -EINVAL;
 }
 
 static int set_params_loopback_9k(struct test_channel *tch)
@@ -2822,6 +5835,7 @@ static int set_params_loopback_9k_close(struct test_channel *tch)
 	case SDIO_RPC:
 		tch->packet_length = 128; /* max is 2K*/
 		break;
+	case SDIO_CIQ:
 	case SDIO_DIAG:
 	case SDIO_RMNT:
 	default:
@@ -2840,11 +5854,22 @@ static int set_params_a2_perf(struct test_channel *tch)
 	tch->test_type = SDIO_TEST_PERF;
 	tch->config_msg.signature = TEST_CONFIG_SIGNATURE;
 	tch->config_msg.test_case = SDIO_TEST_LOOPBACK_CLIENT;
-	tch->packet_length = MAX_XFER_SIZE;
-	if (tch->ch_id == SDIO_DIAG)
+
+	switch (tch->ch_id) {
+	case SDIO_DIAG:
 		tch->packet_length = 512;
-	else if (tch->ch_id == SDIO_DUN)
-			tch->packet_length = DUN_PACKET_SIZE;
+		break;
+	case SDIO_DUN:
+		tch->packet_length = DUN_PACKET_SIZE;
+		break;
+	case SDIO_CSVT:
+		tch->packet_length = CSVT_PACKET_SIZE;
+		break;
+	default:
+		tch->packet_length = MAX_XFER_SIZE;
+		break;
+	}
+
 	pr_info(TEST_MODULE_NAME ": %s: packet_length=%d", __func__,
 			tch->packet_length);
 
@@ -2867,7 +5892,21 @@ static int set_params_rtt(struct test_channel *tch)
 	tch->test_type = SDIO_TEST_RTT;
 	tch->config_msg.signature = TEST_CONFIG_SIGNATURE;
 	tch->config_msg.test_case = SDIO_TEST_LOOPBACK_CLIENT;
-	tch->packet_length = 32;
+
+	switch (tch->ch_id) {
+	case SDIO_RMNT:
+		tch->packet_length = SDIO_RMNT_RTT_PACKET_SIZE;
+		break;
+	case SDIO_CSVT:
+		tch->packet_length = SDIO_CSVT_RTT_PACKET_SIZE;
+		break;
+	default:
+		pr_err(TEST_MODULE_NAME ": %s - ch_id invalid.\n", __func__);
+		return -EINVAL;
+	}
+
+	pr_info(TEST_MODULE_NAME ": %s: packet_length=%d", __func__,
+			tch->packet_length);
 
 	tch->config_msg.num_packets = 200;
 	tch->config_msg.num_iterations = 1;
@@ -2918,6 +5957,31 @@ static int set_params_modem_reset(struct test_channel *tch)
 	tch->config_msg.num_packets = 50000;
 	tch->config_msg.num_iterations = 1;
 
+	tch->timer_interval_ms = 0;
+
+	return 0;
+}
+
+static int set_params_a2_validation(struct test_channel *tch)
+{
+	if (!tch) {
+		pr_err(TEST_MODULE_NAME ":NULL channel\n");
+		return -EINVAL;
+	}
+	tch->is_used = 1;
+	tch->test_type = SDIO_TEST_A2_VALIDATION;
+	tch->config_msg.signature = TEST_CONFIG_SIGNATURE;
+	tch->config_msg.test_case = SDIO_TEST_LOOPBACK_CLIENT;
+
+	if (tch->ch_id == SDIO_RMNT)
+		tch->packet_length = RMNT_PACKET_SIZE;
+	else if (tch->ch_id == SDIO_DUN)
+		tch->packet_length = DUN_PACKET_SIZE;
+	else
+		tch->packet_length = MAX_XFER_SIZE;
+
+	tch->config_msg.num_packets = 10000;
+	tch->config_msg.num_iterations = 1;
 	tch->timer_interval_ms = 0;
 
 	return 0;
@@ -3025,61 +6089,40 @@ static void set_pseudo_random_seed(void)
    for each channel
    1. open channel
    2. close channel
-   3. Run lpm Host waker test on packet channel
 */
-#define MAX_LPM_CH_ARR 3
-static int close_channel_lpm_test(void)
+static int close_channel_lpm_test(int channel_num)
 {
 	int ret = 0;
 	struct test_channel *tch = NULL;
-	int i;
-	int lpm_ch_arr[] = { SDIO_RPC,
-			SDIO_QMI,
-			SDIO_DIAG};
+	tch = test_ctx->test_ch_arr[channel_num];
 
-	for (i = 0; i < MAX_LPM_CH_ARR; i++) {
-		tch = test_ctx->test_ch_arr[lpm_ch_arr[i]];
-
-		/* sdio_close is not implemented for stream ch */
-		if ((!tch) ||
-			(tch->ch_id == SDIO_DUN) ||
-			(tch->ch_id == SDIO_RMNT))
-			continue;
-
-		if (!tch->ch_ready) {
-			ret = sdio_open(tch->name , &tch->ch, tch, notify);
-			if (ret) {
-				pr_err(TEST_MODULE_NAME":%s open channel %s"
-					" failed\n", __func__, tch->name);
-				return ret;
-			} else {
-				pr_info(TEST_MODULE_NAME":%s open channel %s"
-					" success\n", __func__, tch->name);
-			}
-		}
-		ret = sdio_close(tch->ch);
-		if (ret) {
-			pr_err(TEST_MODULE_NAME":%s close channel %s"
-					" failed\n", __func__, tch->name);
-			return ret;
-		} else {
-			pr_info(TEST_MODULE_NAME":%s close channel %s"
-					" success\n", __func__, tch->name);
-			tch->ch_ready = false;
-		}
-		if (tch->ch->is_packet_mode) {
-			set_params_lpm_test(tch, SDIO_TEST_LPM_HOST_WAKER, 120);
-
-			ret = test_start();
-			if (ret) {
-				pr_err(TEST_MODULE_NAME ":test_start failed, "
-					"ret = %d.\n", ret);
-				return ret;
-			}
-		}
-		tch->is_used = 0;
-
+	if (!tch) {
+		pr_info(TEST_MODULE_NAME ":%s ch#%d is NULL\n",
+			__func__, channel_num);
+		return 0;
 	}
+
+	ret = open_sdio_ch(tch);
+	if (ret) {
+		pr_err(TEST_MODULE_NAME":%s open channel %s"
+			" failed\n", __func__, tch->name);
+		return ret;
+	} else {
+		pr_info(TEST_MODULE_NAME":%s open channel %s"
+			" success\n", __func__, tch->name);
+	}
+	ret = close_sdio_ch(tch);
+	if (ret) {
+		pr_err(TEST_MODULE_NAME":%s close channel %s"
+				" failed\n", __func__, tch->name);
+		return ret;
+	} else {
+		pr_info(TEST_MODULE_NAME":%s close channel %s"
+				" success\n", __func__, tch->name);
+	}
+
+	tch->is_used = 0;
+
 	return ret;
 }
 
@@ -3093,183 +6136,12 @@ static int close_channel_lpm_test(void)
 ssize_t test_write(struct file *filp, const char __user *buf, size_t size,
 		   loff_t *f_pos)
 {
-	int ret = 0;
-	int i;
-	struct test_channel **ch_arr = test_ctx->test_ch_arr;
+	sdio_al_test_initial_dev_and_chan(test_ctx);
 
-	for (i = 0 ; i < MAX_NUM_OF_SDIO_DEVICES ; ++i)
-			test_ctx->test_dev_arr[i].sdio_al_device = NULL;
-
-	ret = strict_strtol(buf, 10, &test_ctx->testcase);
+	if (strict_strtol(buf, 10, &test_ctx->testcase))
+		return -EINVAL;
 
 	switch (test_ctx->testcase) {
-	case 1:
-		/* RPC */
-		pr_debug(TEST_MODULE_NAME " --RPC sender--.\n");
-		if (set_params_loopback_9k(test_ctx->test_ch_arr[SDIO_RPC]))
-			return size;
-		break;
-	case 2:
-		/* RPC, QMI and DIAG */
-		pr_debug(TEST_MODULE_NAME " --RPC, QMI and DIAG sender--.\n");
-		if (set_params_loopback_9k(test_ctx->test_ch_arr[SDIO_RPC]) ||
-		    set_params_loopback_9k(test_ctx->test_ch_arr[SDIO_QMI]) ||
-		    set_params_loopback_9k(test_ctx->test_ch_arr[SDIO_DIAG]))
-			return size;
-		break;
-	case 4:
-		pr_debug(TEST_MODULE_NAME " --SMEM--.\n");
-		if (set_params_smem_test(test_ctx->test_ch_arr[SDIO_SMEM]))
-			return size;
-		break;
-
-	case 5:
-		pr_debug(TEST_MODULE_NAME " --SMEM and RPC--.\n");
-		if (set_params_loopback_9k(test_ctx->test_ch_arr[SDIO_RPC]) ||
-		    set_params_smem_test(test_ctx->test_ch_arr[SDIO_SMEM]))
-			return size;
-		break;
-	case 6:
-		pr_debug(TEST_MODULE_NAME " --RmNet A2 Performance--.\n");
-		if (set_params_a2_perf(test_ctx->test_ch_arr[SDIO_RMNT]))
-			return size;
-		break;
-
-	case 7:
-		pr_debug(TEST_MODULE_NAME " --DUN A2 Performance--.\n");
-		if (set_params_a2_perf(test_ctx->test_ch_arr[SDIO_DUN]))
-			return size;
-		break;
-	case 8:
-		pr_debug(TEST_MODULE_NAME " --RmNet and DUN A2 Performance--."
-					  "\n");
-		if (set_params_a2_perf(test_ctx->test_ch_arr[SDIO_RMNT]) ||
-		    set_params_a2_perf(test_ctx->test_ch_arr[SDIO_DUN]))
-			return size;
-		break;
-	case 9:
-		pr_debug(TEST_MODULE_NAME " --RPC sender and RmNet A2 "
-					  "Performance--.\n");
-		if (set_params_loopback_9k(test_ctx->test_ch_arr[SDIO_RPC]) ||
-		    set_params_a2_perf(test_ctx->test_ch_arr[SDIO_RMNT]))
-			return size;
-		break;
-	case 10:
-		pr_debug(TEST_MODULE_NAME " --All the channels--.\n");
-		if (set_params_loopback_9k(test_ctx->test_ch_arr[SDIO_RPC]) ||
-		    set_params_loopback_9k(test_ctx->test_ch_arr[SDIO_QMI]) ||
-		    set_params_loopback_9k(test_ctx->test_ch_arr[SDIO_DIAG]) ||
-		    set_params_a2_perf(test_ctx->test_ch_arr[SDIO_RMNT]) ||
-		    set_params_a2_perf(test_ctx->test_ch_arr[SDIO_DUN]) ||
-		    set_params_smem_test(test_ctx->test_ch_arr[SDIO_SMEM]))
-			return size;
-		break;
-	case 16:
-		pr_info(TEST_MODULE_NAME " -- host sender no LP for Diag --");
-		set_params_8k_sender_no_lp(test_ctx->test_ch_arr[SDIO_DIAG]);
-		break;
-	case 17:
-		pr_info(TEST_MODULE_NAME " -- host sender no LP for Diag, RPC");
-		set_params_8k_sender_no_lp(test_ctx->test_ch_arr[SDIO_DIAG]);
-		set_params_8k_sender_no_lp(test_ctx->test_ch_arr[SDIO_RPC]);
-		break;
-	case 18:
-		pr_info(TEST_MODULE_NAME " -- rmnet small packets (5-128)  --");
-		if (set_params_a2_small_pkts(test_ctx->test_ch_arr[SDIO_RMNT]))
-			return size;
-		break;
-	case 19:
-		pr_info(TEST_MODULE_NAME " -- rmnet RTT --");
-		if (set_params_rtt(test_ctx->test_ch_arr[SDIO_RMNT]))
-			return size;
-		break;
-	case 22:
-		pr_info(TEST_MODULE_NAME " -- modem reset - RPC --");
-		if (set_params_modem_reset(test_ctx->test_ch_arr[SDIO_RPC]))
-			return size;
-		break;
-	case 23:
-		pr_info(TEST_MODULE_NAME " -- modem reset - RMNT --");
-		if (set_params_modem_reset(test_ctx->test_ch_arr[SDIO_RMNT]))
-			return size;
-		break;
-	case 24:
-		pr_info(TEST_MODULE_NAME " -- modem reset - all chs "
-					"4bit device --");
-		if (set_params_modem_reset(test_ctx->test_ch_arr[SDIO_RPC]) ||
-		    set_params_modem_reset(test_ctx->test_ch_arr[SDIO_QMI]) ||
-		    set_params_modem_reset(test_ctx->test_ch_arr[SDIO_DIAG]))
-			return size;
-		break;
-	case 25:
-		pr_info(TEST_MODULE_NAME " -- modem reset - all chs "
-					"8bit device--");
-		if (set_params_modem_reset(test_ctx->test_ch_arr[SDIO_RMNT]) ||
-		    set_params_modem_reset(test_ctx->test_ch_arr[SDIO_DUN]))
-			return size;
-		break;
-	case 26:
-		pr_info(TEST_MODULE_NAME " -- modem reset - all chs --");
-		if (set_params_modem_reset(test_ctx->test_ch_arr[SDIO_RPC]) ||
-		    set_params_modem_reset(test_ctx->test_ch_arr[SDIO_QMI]) ||
-		    set_params_modem_reset(test_ctx->test_ch_arr[SDIO_DIAG]) ||
-		    set_params_modem_reset(test_ctx->test_ch_arr[SDIO_RMNT]) ||
-		    set_params_modem_reset(test_ctx->test_ch_arr[SDIO_DUN]))
-			return size;
-		break;
-	case 27:
-		pr_info(TEST_MODULE_NAME " -- host sender with open/close for "
-				"Diag and RPC --");
-		if (set_params_loopback_9k_close(ch_arr[SDIO_DIAG]) ||
-		    set_params_loopback_9k_close(ch_arr[SDIO_RPC]))
-			return size;
-		break;
-	case 28:
-		pr_info(TEST_MODULE_NAME " -- Close channel & LPM Test "
-			"Host wakes the Client --\n");
-		ret = close_channel_lpm_test();
-		if (ret) {
-			pr_err(TEST_MODULE_NAME " -- Close channel & LPM Test "
-					"FAILED: %d --\n", ret);
-		} else {
-			pr_err(TEST_MODULE_NAME " -- Close channel & LPM Test "
-					"PASSED\n");
-		}
-		return size;
-	case 111:
-		pr_info(TEST_MODULE_NAME " --LPM Test For Device 1. Client "
-			"wakes the Host --.\n");
-		if (set_params_lpm_test(test_ctx->test_ch_arr[SDIO_RPC],
-				    SDIO_TEST_LPM_CLIENT_WAKER, 90))
-			return size;
-		break;
-	case 113:
-		pr_info(TEST_MODULE_NAME " --LPM Test For Device 1. Host "
-			"wakes the Client --.\n");
-		if (set_params_lpm_test(test_ctx->test_ch_arr[SDIO_RPC],
-				    SDIO_TEST_LPM_HOST_WAKER, 120))
-			return size;
-		break;
-	case 114:
-		pr_info(TEST_MODULE_NAME " --LPM Test RANDOM SINGLE "
-					 "CHANNEL--.\n");
-		set_pseudo_random_seed();
-		if (set_params_lpm_test(test_ctx->test_ch_arr[SDIO_RPC],
-					    SDIO_TEST_LPM_RANDOM, 0))
-			return size;
-		break;
-	case 115:
-		pr_info(TEST_MODULE_NAME " --LPM Test RANDOM MULTI "
-					 "CHANNEL--.\n");
-		set_pseudo_random_seed();
-		if (set_params_lpm_test(test_ctx->test_ch_arr[SDIO_RPC],
-				    SDIO_TEST_LPM_RANDOM, 0) ||
-		    set_params_lpm_test(test_ctx->test_ch_arr[SDIO_DIAG],
-					SDIO_TEST_LPM_RANDOM, 0) ||
-		    set_params_lpm_test(test_ctx->test_ch_arr[SDIO_QMI],
-				    SDIO_TEST_LPM_RANDOM, 0))
-			return size;
-		break;
 	case 98:
 		pr_info(TEST_MODULE_NAME " set runtime debug on");
 		test_ctx->runtime_debug = 1;
@@ -3283,31 +6155,7 @@ ssize_t test_write(struct file *filp, const char __user *buf, size_t size,
 			(int)test_ctx->testcase);
 		return size;
 	}
-	ret = test_start();
-	if (ret) {
-		pr_err(TEST_MODULE_NAME ":test_start failed, ret = %d.\n",
-			ret);
-		return size;
-	}
-	/* combined test cases */
-	switch (test_ctx->testcase) {
-	case 27:
-		pr_info(TEST_MODULE_NAME " -- correctness test for"
-				"DIAG and DUN ");
-		if (set_params_loopback_9k(ch_arr[SDIO_DIAG]) ||
-		    set_params_loopback_9k(ch_arr[SDIO_RPC]))
-			return size;
-		break;
-	default:
-		pr_debug(TEST_MODULE_NAME ":2nd test not defined for %ld\n",
-				test_ctx->testcase);
-		return size;
-	}
-	ret = test_start();
-	if (ret) {
-		pr_err(TEST_MODULE_NAME ":2nd round test failed (%d)\n",
-				ret);
-	}
+
 	return size;
 }
 
@@ -3321,7 +6169,7 @@ int test_channel_init(char *name)
 	int ret;
 
 	pr_debug(TEST_MODULE_NAME ":%s.\n", __func__);
-	pr_info(TEST_MODULE_NAME ": init test cahnnel %s.\n", name);
+	pr_info(TEST_MODULE_NAME ": init test channel %s.\n", name);
 
 	ch_id = channel_name_to_id(name);
 	pr_debug(TEST_MODULE_NAME ":id = %d.\n", ch_id);
@@ -3387,19 +6235,19 @@ int test_channel_init(char *name)
 		if ((test_ch->is_used) &&
 		    (test_ch->test_type == SDIO_TEST_MODEM_RESET)) {
 			if (test_ch->ch_id == SDIO_SMEM) {
-				test_ctx->smem_pdev.name = "SDIO_SMEM";
-				test_ctx->smem_pdev.dev.release =
-					default_sdio_al_test_release;
-				platform_device_register(&test_ctx->smem_pdev);
+#ifdef CONFIG_MSM_SDIO_SMEM
+				ret = add_sdio_smem();
+				if (ret) {
+					test_ch->ch_ready = false;
+					return 0;
+				}
+#endif
 			} else {
-				test_ch->ch_ready = true;
-				ret = sdio_open(test_ch->name , &test_ch->ch,
-						test_ch, notify);
+				ret = open_sdio_ch(test_ch);
 				if (ret) {
 					pr_info(TEST_MODULE_NAME
-						":openning channel %s failed\n",
-					test_ch->name);
-					test_ch->ch_ready = false;
+						":%s: open channel %s failed\n",
+					__func__, test_ch->name);
 					return 0;
 				}
 				ret = sdio_test_find_dev(test_ch);
@@ -3442,11 +6290,74 @@ static int sdio_test_channel_remove(struct platform_device *pdev)
 
 	pr_info(TEST_MODULE_NAME "%s: remove ch %s\n",
 		__func__, test_ctx->test_ch_arr[ch_id]->name);
+
+	if ((ch_id == SDIO_SMEM) && (test_ctx->smem_pdev)) {
+		platform_device_unregister(test_ctx->smem_pdev);
+		test_ctx->smem_pdev = NULL;
+	}
+
 	test_ctx->test_ch_arr[ch_id]->ch_ready = 0;
 	test_ctx->test_ch_arr[ch_id]->card_removed = 1;
 
 	return 0;
 
+}
+
+static int sdio_test_channel_ciq_probe(struct platform_device *pdev)
+{
+	int ret = 0;
+
+	if (!pdev)
+		return -ENODEV;
+
+	test_ctx->ciq_app_pdev = platform_device_alloc("SDIO_CIQ_TEST_APP", -1);
+	ret = platform_device_add(test_ctx->ciq_app_pdev);
+		if (ret) {
+			pr_err(MODULE_NAME ":platform_device_add failed, "
+					   "ret=%d\n", ret);
+			return ret;
+		}
+
+	return sdio_test_channel_probe(pdev);
+}
+
+static int sdio_test_channel_ciq_remove(struct platform_device *pdev)
+{
+	if (!pdev)
+		return -ENODEV;
+
+	platform_device_unregister(test_ctx->ciq_app_pdev);
+
+	return sdio_test_channel_remove(pdev);
+}
+
+static int sdio_test_channel_csvt_probe(struct platform_device *pdev)
+{
+	int ret = 0;
+
+	if (!pdev)
+		return -ENODEV;
+
+	test_ctx->csvt_app_pdev = platform_device_alloc("SDIO_CSVT_TEST_APP",
+							-1);
+	ret = platform_device_add(test_ctx->csvt_app_pdev);
+		if (ret) {
+			pr_err(MODULE_NAME ":platform_device_add failed, "
+					   "ret=%d\n", ret);
+			return ret;
+		}
+
+	return sdio_test_channel_probe(pdev);
+}
+
+static int sdio_test_channel_csvt_remove(struct platform_device *pdev)
+{
+	if (!pdev)
+		return -ENODEV;
+
+	platform_device_unregister(test_ctx->csvt_app_pdev);
+
+	return sdio_test_channel_remove(pdev);
 }
 
 static struct platform_driver sdio_rpc_drv = {
@@ -3503,6 +6414,23 @@ static struct platform_driver sdio_dun_drv = {
 	},
 };
 
+static struct platform_driver sdio_ciq_drv = {
+	.probe		= sdio_test_channel_ciq_probe,
+	.remove		= sdio_test_channel_ciq_remove,
+	.driver		= {
+		.name	= "SDIO_CIQ_TEST",
+		.owner	= THIS_MODULE,
+	},
+};
+
+static struct platform_driver sdio_csvt_drv = {
+	.probe		= sdio_test_channel_csvt_probe,
+	.remove		= sdio_test_channel_csvt_remove,
+	.driver		= {
+		.name	= "SDIO_CSVT_TEST",
+		.owner	= THIS_MODULE,
+	},
+};
 
 static struct class *test_class;
 
@@ -3572,6 +6500,8 @@ static int __init test_init(void)
 	platform_driver_register(&sdio_smem_drv);
 	platform_driver_register(&sdio_rmnt_drv);
 	platform_driver_register(&sdio_dun_drv);
+	platform_driver_register(&sdio_ciq_drv);
+	platform_driver_register(&sdio_csvt_drv);
 
 	return ret;
 }
@@ -3599,6 +6529,8 @@ static void __exit test_exit(void)
 	platform_driver_unregister(&sdio_smem_drv);
 	platform_driver_unregister(&sdio_rmnt_drv);
 	platform_driver_unregister(&sdio_dun_drv);
+	platform_driver_unregister(&sdio_ciq_drv);
+	platform_driver_unregister(&sdio_csvt_drv);
 
 	for (i = 0; i < SDIO_MAX_CHANNELS; i++) {
 		struct test_channel *tch = test_ctx->test_ch_arr[i];
