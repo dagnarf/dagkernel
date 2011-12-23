@@ -99,10 +99,12 @@ static void usb_switch_mode(struct sec_switch_struct *secsw, int mode)
 #endif
 	}
 // for qc , samsung usb driver switch [
+#ifdef CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE
 	if (secsw->is_manualset)
 	{
 		UsbMenuSel_switch_store(NULL,NULL,&buf,1);	
 	}
+#endif
 // ]
 }
 

@@ -881,9 +881,7 @@ composite_setup(struct usb_gadget *gadget, const struct usb_ctrlrequest *ctrl)
 	u8				endp;
 	int tmp = intf;
 	int id = 0;
-#ifndef CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE	
 	unsigned long			flags;
-#endif
 
 #ifndef CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE
 	spin_lock_irqsave(&cdev->lock, flags);
